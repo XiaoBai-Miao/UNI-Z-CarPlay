@@ -34,15 +34,36 @@ class LegacyAudioFallbackTest {
         ))
     }
 
+    /**
+     * B561: legacy stream 只给**真的落在导航专声区**的流用。
+     *
+     * 上游原本认为 `default`/`alert`/`compatibility` 三条都在导航声区；
+     * 修了"打字声走导航喇叭"之后，无导航时它们落到 SYSTEM（不吃 legacy），
+     * 导航进行中的 `default` 才回到导航声区。这条守住新的分界。
+     */
     @Test fun onlyGuidanceUsesLegacyStreams() {
         for (type in listOf("telephony", "speechRecognition", "media")) {
             assertFalse(type, AudioChannelMapper.usesNavigationStream(type, 100, false))
         }
         for (type in listOf("default", "alert", "compatibility")) {
-            assertTrue(type, AudioChannelMapper.usesNavigationStream(type, 100, false))
-            assertFalse(type, AudioChannelMapper.usesNavigationStream(type, 100, true))
+            // 没有导航 → 提示音声道，不用 legacy stream。
+            assertFalse("$type/noRoute", AudioChannelMapper.usesNavigationStream(type, 100, false))
+            // 导航中只有 default 真的进导航专声区。
+            val navigating = AudioChannelMapper.usesNavigationStream(
+                type, 100, false,
+                navigationVoiceScope = NavigationVoiceScope.GUIDANCE_ONLY,
+                navigationActive = true,
+            )
+            assertEquals("navigating/$type", type == "default", navigating)
+            assertFalse("$type/automotive", AudioChannelMapper.usesNavigationStream(type, 100, true))
         }
         assertFalse(AudioChannelMapper.usesNavigationStream("unknown", 102, false))
-        assertTrue(AudioChannelMapper.usesNavigationStream("unknown", 100, false))
+        assertTrue(
+            AudioChannelMapper.usesNavigationStream(
+                "unknown", 100, false,
+                navigationVoiceScope = NavigationVoiceScope.GUIDANCE_ONLY,
+                navigationActive = true,
+            ),
+        )
     }
 }

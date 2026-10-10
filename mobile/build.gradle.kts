@@ -14,11 +14,15 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.shihab.diplay"
+        // ★ B561 定制:包名沿用 com.oushang.carplay(欧尚车机),不是上游的
+        //   com.shihab.diplay。签名与 manifest 都按这个包名对齐 —— 平台签名
+        //   (android.uid.system)要求包名与已注册的系统身份一致,改包名会导致
+        //   priv-app 安装后被系统拒绝或签名校验失败。
+        applicationId = "com.oushang.carplay"
         minSdk = 28
         targetSdk = 37
-        versionCode = 33
-        versionName = "0.2.14"
+        versionCode = 48
+        versionName = "0.2.14-oushang1"
 
     }
 

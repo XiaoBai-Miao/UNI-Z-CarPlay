@@ -39,3 +39,7 @@ release-signing.properties
 *.key
 *.apk
 *.aab
+
+# Local toolchain copied into the tree (android-sdk, ghidra, jadx...)
+.tools/
+.gradle-pc/

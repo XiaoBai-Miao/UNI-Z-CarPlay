@@ -44,7 +44,11 @@ internal class AudioChannelPreview(private val onUnavailable: (Int) -> Unit) : C
                     AudioTrack.Builder()
                         .setAudioAttributes(
                             AudioAttributes.Builder()
-                                .setUsage(if (navigation) AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE
+                                // ★ 必须与 AndroidMediaSink 的导航播报保持一致
+                                //   （都用 USAGE_UNDEFINED），否则试听听到的声区
+                                //   跟实车播报不同 —— 会让人误判"这个声道没效果"。
+                                //   理由见 AndroidMediaSink.usageFor 的注释。
+                                .setUsage(if (navigation) NAVIGATION_USAGE_VENDOR_ROUTED
                                     else AudioAttributes.USAGE_MEDIA)
                                 .setContentType(if (navigation) AudioAttributes.CONTENT_TYPE_SPEECH
                                     else AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -125,5 +129,18 @@ internal class AudioChannelPreview(private val onUnavailable: (Int) -> Unit) : C
         private const val TAG = "DiPlayAudioPreview"
         private const val SAMPLE_RATE = 48_000
         private const val TONE_MILLIS = 600
+
+        /**
+         * B561: 让车机自行决定输出声区的 usage 值。
+         *
+         * ★ 直接引用 [B561AudioConstants]，不再另存一份副本 ——
+         *   否则改了一处忘了另一处，"设置页试听"就会与实际 CarPlay 播放
+         *   走不同声区，用户会误判"这个声道没效果"。完整推导见那里的注释。
+         *
+         *   用 `val` 而非 `const val`：跨模块的 `internal object` 常量
+         *   在编译期不保证可见（`const` 要求编译期常量折叠）。
+         */
+        private val NAVIGATION_USAGE_VENDOR_ROUTED: Int =
+            com.shilapi.xcertplay.media.B561AudioConstants.NAVIGATION_USAGE_VENDOR_ROUTED
     }
 }

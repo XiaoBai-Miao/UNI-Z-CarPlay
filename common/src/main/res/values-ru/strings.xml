@@ -631,4 +631,13 @@
     <string name="settings_interface_size">Размер интерфейса</string>
     <string name="settings_interface_size_auto">Автоматически</string>
     <string name="settings_interface_size_hint">Размер текста и элементов управления на экранах DiPlay. В автоматическом режиме они увеличиваются на больших экранах с низкой плотностью. CarPlay не меняется.</string>
+    <string name="settings_nav_voice_scope">Зона голоса навигации</string>
+    <string name="settings_nav_voice_scope_guidance_only">Только водителю при навигации</string>
+    <string name="settings_nav_voice_scope_always">Всегда только водителю</string>
+    <string name="settings_nav_voice_scope_off">Все динамики</string>
+    <string name="settings_nav_voice_scope_description">CarPlay передаёт голос навигации и звуки интерфейса телефона по одному и тому же аудиопотоку. При варианте «только водителю при навигации» поток идёт в динамик навигации только пока идёт маршрут, поэтому щелчки клавиатуры слышны всем. Вступает в силу после переподключения.</string>
+    <string name="settings_system_audio_routing">Звуки телефона во все динамики</string>
+    <string name="settings_system_audio_routing_description">Системные звуки и звуки клавиатуры CarPlay идут через обычные динамики, а не через зону навигации, и никогда не ставят музыку на паузу. Отключите, чтобы сравнить с прежним поведением. Вступает в силу после переподключения.</string>
+    <string name="cluster_junction_card">Схема перекрёстка</string>
+    <string name="cluster_junction_card_description">Рисует ближайший перекрёсток и рекомендуемую полосу по геометрии, которую присылает телефон. CarPlay не передаёт изображений, поэтому DiPlay рисует её так же, как штатная приборная панель. Скрыта, пока телефон не пришлёт данные о полосах.</string>
 </resources>

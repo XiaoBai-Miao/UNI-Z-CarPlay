@@ -145,6 +145,8 @@ internal object CarPlayMediaKeys {
             artwork = decoded
             session?.setMetadata(androidMetadata(nowPlaying, shownArtworkLocked()))
         }
+        // ★ 通知仪表媒体卡：封面比歌名晚到（异步分块传输），不通知它就画不出来。
+        notifyArtworkChanged()
     }
 
     // Another car app (its own Spotify, the radio) took audio focus and with it the steering-wheel
@@ -223,7 +225,21 @@ internal object CarPlayMediaKeys {
         // Resolve the matching sink and invoke it outside the media-key monitor. An abandoned
         // request must never mute a newer controller, and these owners must not nest locks.
         val background = CarPlayBackgroundSession.snapshot()
-        if (background?.controller === expectedController) background.sink.onMediaAudioFocusChanged(change)
+        if (background?.controller === expectedController) {
+            background.sink.onMediaAudioFocusChanged(change)
+            // ★ B561: 本会话持有焦点时，明确告诉 sink「焦点在我这儿」。
+            //   否则 sink 的 AudioFocusCoordinator 会**自己再申请一份**焦点，
+            //   而 Android 焦点按进程判定 —— 同进程两份请求会互相顶掉：
+            //     requestAudioFocus(com.oushang.carplay req=1)   ← CarPlayMediaKeys
+            //     requestAudioFocus(com.oushang.carplay req=1)   ← AudioFocusCoordinator
+            //     dispatching onAudioFocusChange(-1) → CarPlayMediaKeys$…   ← 自己踢自己
+            //   焦点链一断，iPhone 侧就把 CarPlay 判成暂停
+            //   （车机音频其实还在播，rebuffers=0 playing=true）。
+            //   实车日志证据见 AndroidMediaSink.setExternallyHeldFocus 的注释。
+            // ★ 只在本会话**真的持有**焦点时才通知（focusHeld 已在上面更新）。
+            //   change==GAIN 且授予成功时为 true；LOSS 时为 false，让 sink 收回自己的请求。
+            background.sink.setExternallyHeldFocus(focusHeld)
+        }
     }
 
     private fun releaseLocked() {
@@ -307,6 +323,44 @@ internal object CarPlayMediaKeys {
     // Without art the car draws DiPlay's bright launcher icon instead.
     private fun shownArtworkLocked(): Bitmap? =
         artwork ?: placeholder ?: appContext?.let(::placeholderArt)?.also { placeholder = it }
+
+    /**
+     * B561: 当前专辑封面，供仪表媒体卡使用。
+     *
+     * 封面数据本来就已经在收（`CarPlayController.artworkListener` →
+     * [onArtworkChanged] → [NowPlayingArtworkQueue] → `artwork`）并解码好缓存着，
+     * **只是没有出口给副屏** —— 之前 `setMediaCard(...)` 的 `artwork` 参数一直
+     * 走默认值 null，所以卡上永远没有封面。
+     *
+     * 返回 `null` 表示"还没有封面"：iPhone 没推、或传输还没解完。
+     * 这时卡应当纯文字（[ClusterMediaCardView.setArtwork] 收 null 即不画），
+     * **不要画占位图** —— 仪表屏上一块灰方块比没有更让人以为卡住了。
+     *
+     * `@Synchronized` 与本类其它访问器一致：`artwork` 由 iAP2 链路的工作线程写。
+     */
+    @Synchronized
+    internal fun currentArtwork(): Bitmap? = artwork
+
+    /**
+     * B561: 封面解码完成时通知外部（仪表媒体卡需要重绘）。
+     *
+     * ## 为什么必须加这个通知
+     *
+     * iAP2 的封面是**分块异步传输**的：iPhone 先发 Start、再发若干 Data、最后 Success，
+     * 收齐才解码成 Bitmap。所以**封面到达的时刻远晚于歌名**
+     * （歌名走 `nowPlayingListener` 同步回调）。
+     * `CarPlayHostActivity` 只在歌名变化时刷新仪表卡，
+     * 那时`artwork` 还是 null → 卡上永远没封面。
+     *
+     * 回调在**主线程**触发（`mainHandler.post`），所以订阅方可以直接改UI。
+     */
+    @Volatile
+    internal var artworkObserver: (() -> Unit)? = null
+
+    private fun notifyArtworkChanged() {
+        val observer = artworkObserver ?: return
+        mainHandler.post { observer() }
+    }
 
     internal fun placeholderArt(context: Context): Bitmap? = context
         .getDrawable(R.drawable.art_now_playing_placeholder)

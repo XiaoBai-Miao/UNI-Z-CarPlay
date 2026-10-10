@@ -691,4 +691,13 @@
     <string name="settings_interface_size">介面大小</string>
     <string name="settings_interface_size_auto">自動</string>
     <string name="settings_interface_size_hint">DiPlay 自身畫面中文字與控制項的大小。自動模式會在大尺寸低密度螢幕上放大它們。不影響 CarPlay。</string>
+    <string name="settings_nav_voice_scope">導航語音聲區</string>
+    <string name="settings_nav_voice_scope_guidance_only">導航中僅主駕</string>
+    <string name="settings_nav_voice_scope_always">始終僅主駕</string>
+    <string name="settings_nav_voice_scope_off">全車可聽</string>
+    <string name="settings_nav_voice_scope_description">CarPlay 把導航語音和手機介面提示音放在同一條音訊流上。選「導航中僅主駕」時，只有路線進行中才走主駕導航聲區，因此打字的喀答聲全車都聽得到。需重新連線後生效。</string>
+    <string name="settings_system_audio_routing">手機提示音走全車</string>
+    <string name="settings_system_audio_routing_description">把 CarPlay 的系統提示音、鍵盤聲改走一般喇叭，而不是導航專聲區，並且不會因此暫停音樂。關閉可與改動前的效果做比較。需重新連線後生效。</string>
+    <string name="cluster_junction_card">路口放大圖</string>
+    <string name="cluster_junction_card_description">用 iPhone 下發的路口幾何與車道資料畫出前方路口和推薦車道。CarPlay 本身不發圖片，所以由 DiPlay 自行繪製（與原廠儀表同一思路）。沒有車道資料時整塊不顯示。</string>
 </resources>

@@ -301,8 +301,11 @@ class AdaptiveSettingsUiTest {
             .performClick()
 
         assertTrue(texts(screen).any { it.text == screen.getString(R.string.settings_advanced_caution_title) })
-        assertTrue(texts(screen).any { it.text == screen.getString(R.string.carplay_map_on_instrument_cluster_experimental) })
         assertTrue(texts(screen).any { it.text == screen.getString(R.string.advanced_vehicle_data) })
+        // 仪表屏分区已按用户要求从「高级」移到「导航」——
+        // 投图本质是"把导航画面送到仪表"，归到导航语义更对；而且「高级」是
+        // 诊断类默认收起的页，把日常要调的仪表选项藏在那里不合理。
+        assertFalse(texts(screen).any { it.text == screen.getString(R.string.carplay_map_on_instrument_cluster_experimental) })
         assertFalse(texts(screen).any { it.text == screen.getString(R.string.automatic_connection) })
         assertFalse(texts(screen).any { it.text == screen.getString(R.string.display_and_performance) })
         assertFalse(texts(screen).any { it.text == screen.getString(R.string.audio_routing) })
@@ -336,7 +339,21 @@ class AdaptiveSettingsUiTest {
         val advanced = visibleIn(R.string.settings_advanced)
 
         assertTrue(audio.any { it.startsWith(text(R.string.music_buffer)) })
-        listOf(R.string.main_buffered_audio, R.string.efficient_video, R.string.smooth_video, R.string.call_echo_cancellation, R.string.call_voice_filter, R.string.contrib_audio_home_toggle_audio_focus).forEach {
+        // B561: 「音频焦点」「主缓冲音频」「高级声道映射」原本挂在「高级 → 高级媒体」，
+        // 用户要求挪进「音频」—— 排查导航声/焦点/声道时就在音频菜单里找，不必翻高级页。
+        // 视频相关（HEVC / 平滑视频 / 回声消除 / 语音过滤）仍在高级页。
+        listOf(
+            R.string.contrib_audio_home_toggle_audio_focus,
+            R.string.main_buffered_audio,
+        ).forEach {
+            assertTrue(text(it), text(it) in audio)
+        }
+        // 「高级声道映射」由 R.bool.config_advanced_audio_channel_mapping 门控，
+        // 资源为 false 时整项不渲染（与它在哪个分类无关）。B561 实车该项为 true。
+        if (screen.resources.getBoolean(R.bool.config_advanced_audio_channel_mapping)) {
+            assertTrue(text(R.string.advanced_audio_channel_mapping), text(R.string.advanced_audio_channel_mapping) in audio)
+        }
+        listOf(R.string.efficient_video, R.string.smooth_video, R.string.call_echo_cancellation, R.string.call_voice_filter).forEach {
             assertTrue(text(it), text(it) in advanced)
             assertFalse(text(it), text(it) in audio)
         }
@@ -411,7 +428,8 @@ class AdaptiveSettingsUiTest {
                 destination.contentDescription?.endsWith(" settings") == true &&
                 descendants(destination).filterIsInstance<ImageView>().count() == 1
         }.toList()
-        assertEquals(8, destinations.size)
+        // 8 → 9：新增「仪表」一级分类（用户要求把仪表设置从「导航」里独立出来）。
+        assertEquals(9, destinations.size)
         destinations.forEach { destination ->
             assertEquals(1, descendants(destination).filterIsInstance<ImageView>().count())
         }

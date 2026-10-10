@@ -14,6 +14,33 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Optional, owner-enabled Usage Access for the verified DiLink 5.1 cluster profile. -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
+
+    <!--
+      B561 车机热点与 Wi-Fi P2P：读真实 AP 信道（0x5703 / 0x4301 要把信道带给 iPhone）、
+      开热点、以及 P2P 组建立后的地址/网络状态读写。
+
+      ★ 这五个是 0.2.14 上游没有的 —— 上游只面向比亚迪，热点走它自己的路径。
+      B561 走 CarCabinManager + CarPlay 热点，必须补齐，否则热点开不起来、
+      P2P 拿不到可用地址。装在 /data/app 时系统不会授予 signature|privileged 级权限，
+      一旦推到 /system/priv-app 就立即生效。不依赖它们的降级路径见 B561CarHotspot.kt。
+    -->
+    <uses-permission android:name="android.permission.TETHER_PRIVILEGED" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.OVERRIDE_WIFI_CONFIG" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
+    <!-- startTethering 反射走网络状态写权限，普通安装即可授予。 -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_MAC_ADDRESS" tools:ignore="ProtectedPermissions" />
+
+    <!--
+      B561 v67: 车辆数据的第二条通路 —— 解析系统服务打印的车辆属性日志。
+
+      READ_LOGS 是 signature|system 级，平台签名 +推到 /system/priv-app 后通常授予。
+      ★ 拿不到不影响主流程：[HybridVehicleStatus] 会安静退回纯 VHAL，
+        只是少了一路补缺手段（电量/续航在某些固件上只有日志里有）。
+        所以这里 tools:ignore=ProtectedPermissions，不必为了它阻塞安装。
+    -->
+    <uses-permission android:name="android.permission.READ_LOGS" tools:ignore="ProtectedPermissions" />
+
     <!-- The centre card also follows whichever launcher is the default home. -->
     <queries>
         <package android:name="com.byd.carsettings" />

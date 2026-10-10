@@ -50,7 +50,13 @@ class ClusterSettingsConsentTest {
         activity.setup().visible()
         ReflectionHelpers.setField(screen, "setupError", null)
         ReflectionHelpers.setField(screen, "page", "settings")
-        ReflectionHelpers.setField(screen, "settingsCategory", SettingsCategory.ADVANCED)
+        // 仪表分区（CLUSTER_MAP）已从 ADVANCED 移到 NAVIGATION —— 投图本质是
+        // "把导航画面送到仪表"，归到导航语义更对；而且 ADVANCED 是诊断类
+        // 默认收起的页，把日常要调的仪表选项藏在那里不合理。
+        // 本测试要的 `adb_cluster_activity_mode` 就在仪表分区里，所以进 NAVIGATION。
+        // 仪表分区已从 NAVIGATION 移到独立的 CLUSTER 分类（用户要求）——
+        // 本测试要的 `adb_cluster_activity_mode` 就在仪表分区里，所以进 CLUSTER。
+        ReflectionHelpers.setField(screen, "settingsCategory", SettingsCategory.CLUSTER)
         AirPlayPersistence.saveWirelessEnabled(screen, false)
         session = mock(CarPlayController::class.java)
         CarPlayBackgroundSession.store(session, mock(AndroidMediaSink::class.java), 800, 480,

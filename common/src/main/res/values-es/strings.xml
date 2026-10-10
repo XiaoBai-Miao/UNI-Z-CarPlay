@@ -631,4 +631,13 @@
     <string name="settings_interface_size">Tamaño de la interfaz</string>
     <string name="settings_interface_size_auto">Automático</string>
     <string name="settings_interface_size_hint">Tamaño del texto y los controles en las pantallas de DiPlay. Automático los agranda en pantallas grandes de baja densidad. No afecta a CarPlay.</string>
+    <string name="settings_nav_voice_scope">Zona de voz de navegación</string>
+    <string name="settings_nav_voice_scope_guidance_only">Solo el conductor al navegar</string>
+    <string name="settings_nav_voice_scope_always">Solo el conductor siempre</string>
+    <string name="settings_nav_voice_scope_off">Todos los altavoces</string>
+    <string name="settings_nav_voice_scope_description">CarPlay envía la voz de navegación y los sonidos de la interfaz del teléfono por el mismo flujo de audio. Con la opción «solo el conductor al navegar», el flujo sigue el altavoz de navegación solo mientras haya ruta, así que los tecleos se oyen en todo el habitáculo. Se aplica tras reconectar.</string>
+    <string name="settings_system_audio_routing">Sonidos del teléfono a todos los altavoces</string>
+    <string name="settings_system_audio_routing_description">Reproduce los sonidos del sistema y del teclado de CarPlay por los altavoces normales en lugar de la zona de navegación, y nunca pausa la música por ellos. Desactívalo para comparar con el comportamiento anterior. Se aplica tras reconectar.</string>
+    <string name="cluster_junction_card">Vista del cruce</string>
+    <string name="cluster_junction_card_description">Dibuja el cruce inminente y el carril recomendado a partir de la geometría que envía el teléfono. CarPlay nunca envía una imagen, así que DiPlay la dibuja igual que el cuadro de instrumentos de fábrica. Permanece oculto hasta que el teléfono envía datos de carriles.</string>
 </resources>

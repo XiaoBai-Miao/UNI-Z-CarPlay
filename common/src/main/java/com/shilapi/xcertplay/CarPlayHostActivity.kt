@@ -332,9 +332,44 @@ class CarPlayHostActivity : ComponentActivity() {
     // Keep one surface per layer alive, including while its map card is hidden.
     private val clusterLayers = mutableMapOf<Boolean, ClusterMapPresentation>()
     private var clusterTurnGuidance: com.shilapi.xcertplay.hud.ClusterTurnGuidance? = null
+
+    // B561: 车道级导航数据（路口放大图的数据源）。与转向分开收 ——
+    //   一次转向里车道组会换好几次，合成一个对象每次重发会让转向卡白白重画。
+    private var clusterLaneGuidance: com.shilapi.xcertplay.hud.ClusterLaneGuidance? = null
+
+    // B561: 仪表媒体卡 / 通话卡的数据缓存。由 CarPlayGlance 快照与 iAP2 通话状态驱动，
+    // applyClusterTurnOverlay() 时统一推给各 Presentation。
+    private var clusterMediaTitle: String? = null
+    private var clusterMediaArtist: String? = null
+    /** B561 v69: 专辑名 —— 媒体卡第三行。 */
+    private var clusterMediaAlbum: String? = null
+    private var clusterMediaPlaying = false
+    private var clusterCallCard: com.shilapi.xcertplay.hud.CarPlayCallCard? = null
+    private var clusterCallStartedAtMillis: Long? = null
+
+    // B561: 车况回传手机 CarPlay（电量/续航）。双路数据源
+    //（VHAL 轮询 + logcat 解析），见 [B561VehicleStatusProvider]。
+    private val b561VehicleStatus = com.shilapi.xcertplay.vehicle.B561VehicleStatusProvider()
+
+    /** 开关是否打开。改动需要重连才生效 —— provider 在建controller 时注入。 */
+    private fun vehicleStatusToIphoneEnabled(): Boolean =
+        AirPlayPersistence.loadB561VehicleStatusToIphone(this)
     private val clusterTurnOverlayListener: (com.shilapi.xcertplay.hud.ClusterTurnGuidance?) -> Unit = { guidance ->
         runOnUiThread {
             clusterTurnGuidance = guidance
+            applyClusterTurnOverlay()
+        }
+    }
+
+    /**
+     * B561: 车道指引（0x5204）→ 路口放大图。
+     *
+     * 只推数据与显隐，几何/透明度由 [applyClusterTurnOverlay] 统一下发 ——
+     * 与另外三张卡同一套路径，避免设置刚改完就被这里冲掉。
+     */
+    private val clusterLaneListener: (com.shilapi.xcertplay.hud.ClusterLaneGuidance?) -> Unit = { lanes ->
+        runOnUiThread {
+            clusterLaneGuidance = lanes
             applyClusterTurnOverlay()
         }
     }
@@ -424,6 +459,10 @@ class CarPlayHostActivity : ComponentActivity() {
                 darkMode = night
                 paintWaitingScreen()
                 applyClusterTurnOverlay()
+                // 状态栏跟着昼夜反色：白天白底深色图标，夜间黑底浅色图标。
+                // 不跟随系统 uiMode —— 车机常年报 UI_MODE_NIGHT_UNDEFINED，
+                // 跟系统等于永远不切。见 SystemBars。
+                SystemBars.apply(this, night)
                 appendLog("CarPlay switched to ${if (night) "night" else "day"} mode")
                 logThemeState(nightModeDiagnosticSource, resources.configuration)
                 syncAirPlayDarkMode(nightModeDiagnosticSource)
@@ -465,6 +504,9 @@ class CarPlayHostActivity : ComponentActivity() {
     private val refreshTurnOverlay = object : Runnable {
         override fun run() {
             com.shilapi.xcertplay.hud.BydNavigationOutputs.refreshTurnOverlay()
+            // B561: 导航语音与 UI 咔哒声共流，只能靠"当前有没有导航"区分 ——
+            //   每秒同步一次给 sink，让下一条 `default` 音频流走对声道。
+            sink?.setNavigationActive(clusterTurnGuidance != null)
             mainHandler.postDelayed(this, 1_000L)
         }
     }
@@ -796,6 +838,79 @@ class CarPlayHostActivity : ComponentActivity() {
         CenterMapOverlay.onDiPlayScreenShown()
         homeMonitor?.stop()
         homeScreenVisible = null
+        subscribeClusterMedia()
+        // B561: 只有开关打开才起双路采集（VHAL 1 Hz 反射 + logcat 读流）——
+        // 两条路都不该在开关关闭时白跑。
+        if (vehicleStatusToIphoneEnabled()) b561VehicleStatus.start(this)
+        // ★ B561 v67: 注册给 [VehicleProbe] —— 诊断导出与设置页监测面板要读
+        //   **这一个**实例的融合状态。
+        //   只在"还没有活跃实例"时绑定：设置页也会往同一槽位放它自己起的那个，
+        //   若这里无条件覆盖，用户刚在设置页打开开关、回到 CarPlay 就被顶掉了。
+        if (com.shilapi.xcertplay.vehicle.VehicleProbe.activeStatusProvider() == null) {
+            com.shilapi.xcertplay.vehicle.VehicleProbe.bindStatusProvider(b561VehicleStatus)
+        }
+        // 通话状态每秒读一次（低频事件：响铃/接通/挂断），1 秒延迟无感。
+        mainHandler.removeCallbacks(pollClusterCallTask)
+        mainHandler.post(pollClusterCallTask)
+    }
+
+    private val pollClusterCallTask = object : Runnable {
+        override fun run() {
+            if (isFinishing || isDestroyed) return
+            pollClusterCall()
+            mainHandler.postDelayed(this, CLUSTER_CALL_POLL_MILLIS)
+        }
+    }
+
+    /**
+     * B561: 订阅 [CarPlayGlance] 的媒体元数据，喂仪表媒体卡。
+     *
+     * ★ **必须切回主线程**。`CarPlayGlance` 的 listener 在 **iAP2 隧道线程**上触发
+     *   （`BydHudRouteState` / `ClusterSongState` 由协议帧更新），而 applyClusterTurnOverlay()
+     *   会碰 View —— 跨线程就是日志里那条
+     *   `CalledFromWrongThreadException: Only the original thread that created a view hierarchy
+     *   can touch its views`，其后果不止警告：布局被打断后 view 可能还没 measure
+     *   就被 invalidate，0x0 尺寸一路传到卡片的 `ClusterTurnCardOverlay.card()`。
+     */
+    private fun subscribeClusterMedia() {
+        com.shilapi.xcertplay.glance.CarPlayGlance.listener = { snapshot ->
+            runOnUiThread {
+                // 用 title 而非 song：song 是"歌名 — 歌手"的单行拼接，
+                // 媒体卡分三行显示（歌名/歌手/专辑），要原始的三个字段。
+                clusterMediaTitle = snapshot.title ?: snapshot.song
+                clusterMediaArtist = snapshot.artist
+                clusterMediaAlbum = snapshot.album
+                clusterMediaPlaying = snapshot.playing
+                applyClusterTurnOverlay()
+            }
+        }
+        // ★ 封面是 iAP2 **异步分块传输**，解码完成时刻晚于歌名。
+        //   歌名回调触发时 artwork 还是 null，所以必须单独订阅封面到达事件，
+        //   否则仪表媒体卡永远画不出封面。
+        //   onStop 会清空（CarPlayMediaKeys 是 object = 静态单例，不清会持有 Activity）。
+        CarPlayMediaKeys.artworkObserver = {
+            if (!isFinishing && !isDestroyed) applyClusterTurnOverlay()
+        }
+    }
+
+    /**
+     * 轮询通话状态（B561）。
+     *
+     * 通话数据来自 iAP2 `CallStateUpdate(0x4155)`，由
+     * [com.shilapi.xcertplay.hud.BydCarPlayCall] 解析（协议解析与车机无关，
+     * 所以非比亚迪车机也可用）。它没有 listener，只有 [BydCarPlayCall.current]，
+     * 所以这里每秒读一次。
+     *
+     * ★ 为什么轮询而不是加回调：加回调要改上游那个类（它同时服务比亚迪 SOME/IP
+     *   写入），多一个并发点；而通话状态本来就是低频事件 —— 响铃/接通/挂断三下，
+     *   1 秒的延迟完全无感，且 [ClusterCallCardView] 的通话时长本来就按秒自增。
+     */
+    private fun pollClusterCall() {
+        val call = com.shilapi.xcertplay.hud.BydCarPlayCall.current()
+        if (call == clusterCallCard) return
+        clusterCallCard = call
+        clusterCallStartedAtMillis = call?.activeSinceMillis?.let { System.currentTimeMillis() - it }
+        applyClusterTurnOverlay()
     }
 
     override fun onResume() {
@@ -815,6 +930,13 @@ class CarPlayHostActivity : ComponentActivity() {
                 nightSchedule)
         }
         nightModeController.resume(systemNight)
+        // ★ 状态栏要在**恢复时**就上色，不能只等 onNightChanged 回调。
+        //
+        // 踩过的坑：只把 SystemBars.apply 挂在昼夜切换回调里，结果"白天启动"
+        // 这条路径压根不触发切换（resume 直接把状态设成白天了），状态栏就一直是
+        // 系统默认的深色 —— 表现是"app 设置页正常、CarPlay 界面白天仍深色"。
+        // 回调只覆盖"切换"，不覆盖"初始"。
+        SystemBars.apply(this, darkMode)
         if (!menuOpen) {
             displayScalePercent = AirPlayPersistence.loadDisplayScalePercent(this)
             displayScaleTenths = CarPlayDisplayScale.sanitize((displayScalePercent + 5) / 10)
@@ -852,6 +974,7 @@ class CarPlayHostActivity : ComponentActivity() {
         ensureClusterPresentation()
         AirPlayPersistence.overlaySettingsListener = { runOnUiThread { applyClusterTurnOverlay() } }
         com.shilapi.xcertplay.hud.BydNavigationOutputs.setTurnOverlayListener(clusterTurnOverlayListener)
+        com.shilapi.xcertplay.hud.BydNavigationOutputs.setLaneGuidanceListener(clusterLaneListener)
         mainHandler.removeCallbacks(refreshTurnOverlay)
         mainHandler.post(refreshTurnOverlay)
         var systemBarsChanged = false
@@ -911,7 +1034,11 @@ class CarPlayHostActivity : ComponentActivity() {
             appendLog("Cluster map: no cluster projection display among ${ClusterMapPresentation.describeDisplays(this)}")
             return
         }
-        val presentation = ClusterMapPresentation(this, display, theme) { surface -> runOnUiThread { onClusterSurface(surface) } }
+        // B561: 把 host 的 darkMode 传进去 —— 比亚迪那套 contrast 判据在非比亚迪车机上恒为浅色，
+        // 等待页会一直是白底（实测夜间模式下仪表一片惨白）。
+        val presentation = ClusterMapPresentation(this, display, theme, { surface ->
+            runOnUiThread { onClusterSurface(surface) }
+        }, darkMode)
         // The system dismisses a presentation when its display goes away; allow a new one on resume.
         presentation.setOnDismissListener {
             if (clusterPresentation === presentation) {
@@ -942,11 +1069,11 @@ class CarPlayHostActivity : ComponentActivity() {
         if (target == null) {
             val display = ClusterMapPresentation.findDisplay(this, theme) ?: return
             lateinit var presentation: ClusterMapPresentation
-            presentation = ClusterMapPresentation(this, display, theme) { surface ->
+            presentation = ClusterMapPresentation(this, display, theme, { surface ->
                 runOnUiThread {
                     if (clusterPresentation === presentation) onClusterSurface(surface)
                 }
-            }
+            }, darkMode)
             presentation.setOnDismissListener {
                 if (clusterLayers[fullMap] === presentation) clusterLayers.remove(fullMap)
                 if (clusterPresentation === presentation) clusterPresentation = null
@@ -982,15 +1109,96 @@ class CarPlayHostActivity : ComponentActivity() {
             AirPlayPersistence.loadClusterTurnCardOverlaySizePercent(this),
             AirPlayPersistence.loadClusterTurnCardOpacityPercent(this), darkMode)
         val presentations = (clusterLayers.values + listOfNotNull(clusterPresentation)).distinct()
+        // ★ 每张卡**独立**下发几何 —— 原先三张卡共用转向卡那一份滑块，
+        //   结果媒体卡与转向卡永远重叠、用户无法分开摆。这是踩过的坑。
+        val turnGeometry = Triple(
+            AirPlayPersistence.loadClusterTurnCardOverlayXPercent(this),
+            AirPlayPersistence.loadClusterTurnCardOverlayYPercent(this),
+            AirPlayPersistence.loadClusterTurnCardOverlaySizePercent(this),
+        )
+        val mediaGeometry = Triple(
+            AirPlayPersistence.loadClusterMediaXPercent(this),
+            AirPlayPersistence.loadClusterMediaYPercent(this),
+            AirPlayPersistence.loadClusterMediaSizePercent(this),
+        )
+        val callGeometry = Triple(
+            AirPlayPersistence.loadClusterCallXPercent(this),
+            AirPlayPersistence.loadClusterCallYPercent(this),
+            AirPlayPersistence.loadClusterCallSizePercent(this),
+        )
+        val artworkOn = AirPlayPersistence.loadClusterMediaArtwork(this)
         for (presentation in presentations) {
-            presentation.setTurnCardOverlay(
-                AirPlayPersistence.loadClusterTurnCardOverlayXPercent(this),
-                AirPlayPersistence.loadClusterTurnCardOverlayYPercent(this),
-                AirPlayPersistence.loadClusterTurnCardOverlaySizePercent(this),
+            presentation.setCardGeometry(turnGeometry, mediaGeometry, callGeometry)
+            presentation.setCardOpacity(
+                AirPlayPersistence.loadClusterTurnCardOpacityPercent(this),
+                AirPlayPersistence.loadClusterMediaOpacityPercent(this),
+                AirPlayPersistence.loadClusterCallOpacityPercent(this),
             )
-            presentation.setTurnCardOpacity(AirPlayPersistence.loadClusterTurnCardOpacityPercent(this))
-            presentation.setTurnCardNightMode(darkMode)
+            presentation.setClusterCardNightMode(darkMode)
+            // B561: 等待页/底衬也跟着昼夜换色 —— 否则夜间仪表上留着一块浅底"等待 CarPlay"。
+            presentation.setNightMode(darkMode)
+            presentation.setMediaCardArtworkEnabled(artworkOn)
+            // B561: 文字大小与滚动是**媒体卡专属**，不跟三张卡共用几何。
+            presentation.setMediaCardTextScalePercent(
+                AirPlayPersistence.loadClusterMediaTextScalePercent(this),
+            )
+            presentation.setMediaCardScrollText(
+                AirPlayPersistence.loadClusterMediaScrollText(this),
+            )
+            // B561: 媒体卡的宽/高与排放方向（形状独立于三卡共用的 x/y/size）。
+            presentation.setMediaCardShape(
+                AirPlayPersistence.loadClusterMediaWidthPercent(this),
+                AirPlayPersistence.loadClusterMediaHeightPercent(this),
+                AirPlayPersistence.loadClusterMediaOrientation(this),
+            )
             presentation.setTurnCardGuidance(if (overlay) clusterTurnGuidance else null)
+            // ★ B561: 路口放大图（车道级导航图）。
+            //   它由 iOS 的 0x5204/0x5202 几何渲染而成 —— CarPlay 不发成品图，
+            //   原厂仪表也是自己画的。数据没有时整块隐藏（宁缺勿画）。
+            presentation.setJunctionLanes(
+                if (AirPlayPersistence.loadClusterJunctionCardEnabled(this)) clusterLaneGuidance else null,
+            )
+            presentation.setJunctionGeometry(
+                AirPlayPersistence.loadClusterJunctionXPercent(this),
+                AirPlayPersistence.loadClusterJunctionYPercent(this),
+                AirPlayPersistence.loadClusterJunctionSizePercent(this),
+            )
+            presentation.setJunctionOpacity(AirPlayPersistence.loadClusterJunctionOpacityPercent(this))
+        }
+        pushClusterMediaAndCall(presentations)
+    }
+
+    /**
+     * B561: 把媒体信息与通话状态推给仪表上的悬浮卡。
+     *
+     * 媒体取主屏那条iAP2 元数据链（与主屏 Now Playing 同源），通话直接用
+     * [com.shilapi.xcertplay.hud.CarPlayCallState] 的解析结果 —— 上游那份
+     * `carplay_calls_on_dashboard` 是比亚迪专有（反射写 SOME/IP 让原厂应用显示），
+     * 我们只借用它的**协议解析**，出口换成画到副屏。
+     */
+    private fun pushClusterMediaAndCall(presentations: List<ClusterMapPresentation>) {
+        val mediaOn = AirPlayPersistence.loadClusterMediaCardEnabled(this)
+        val callOn = AirPlayPersistence.loadClusterCallCardEnabled(this)
+        val elapsed = clusterCallStartedAtMillis
+            ?.let { (SystemClock.elapsedRealtime() - it) / 1000L } ?: 0L
+        for (presentation in presentations) {
+            presentation.setMediaCard(
+                if (mediaOn) clusterMediaTitle else null,
+                clusterMediaArtist,
+                clusterMediaAlbum,
+                clusterMediaPlaying,
+                // ★ B561: 传真实专辑封面。之前这个参数一直走默认值 null，
+                //   所以卡上永远没有封面 —— 而数据其实早就在收了
+                //   （CarPlayController.artworkListener → NowPlayingArtworkQueue
+                //   → 解码成 Bitmap 缓存着），只是没有出口到副屏。
+                //   为 null 时 View 内部纯文字，不画占位块（仪表屏上灰方块更误导）。
+                CarPlayMediaKeys.currentArtwork(),
+            )
+            // ★ 通话中优先：正在通话时媒体卡让位（setCallCard 内部 bringToFront）。
+            presentation.setCallCard(
+                if (callOn) clusterCallCard else null,
+                elapsed,
+            )
         }
     }
 
@@ -1214,6 +1422,15 @@ class CarPlayHostActivity : ComponentActivity() {
         isActivityStarted = false
         logThemeState(ThemeModeDiagnostics.Source.STOP, resources.configuration)
         mainHandler.removeCallbacks(pollConfiguration)
+        // 通话轮询必须停 —— 它 postDelayed 自己，不 stop 就会一直跑下去
+        // 并持有 Activity。
+        mainHandler.removeCallbacks(pollClusterCallTask)
+        // B561: 停双路采集（VHAL 轮询 + logcat 读流）。线程都是 daemon 的，
+        // 不停也不会挂进程，但会白跑每秒一次的反射 + 一个常驻读流。
+        b561VehicleStatus.stop()
+        // ★ CarPlayMediaKeys 是 object（静态单例），不清这个 observer 会一直持有
+        //   已停止的 Activity —— 泄漏。onStart 每次都会重新设上。
+        CarPlayMediaKeys.artworkObserver = null
         super.onStop()
         if (!isFinishing && !isChangingConfigurations) CenterMapOverlay.scheduleShow()
     }
@@ -1308,6 +1525,9 @@ class CarPlayHostActivity : ComponentActivity() {
         mainHandler.removeCallbacks(refreshTurnOverlay)
         AirPlayPersistence.overlaySettingsListener = null
         com.shilapi.xcertplay.hud.BydNavigationOutputs.setTurnOverlayListener(null)
+        // B561: 车道监听一起注销 —— 留着会在 Activity 销毁后往 UI 线程post。
+        com.shilapi.xcertplay.hud.BydNavigationOutputs.setLaneGuidanceListener(null)
+        clusterLaneGuidance = null
         clusterMonitor?.stop()
         getSystemService(android.hardware.display.DisplayManager::class.java)
             ?.unregisterDisplayListener(clusterDisplayListener)
@@ -1587,6 +1807,26 @@ class CarPlayHostActivity : ComponentActivity() {
         sidePanelBattery?.text = battery?.let { "🔋 ${Math.round(it.batteryPercent)} %  ·  ${it.rangeKm} km" }.orEmpty()
     }
 
+    /**
+     * 连接后双指下滑弹出的设置菜单（897 行，单列长滚动）。
+     *
+     * ## 为什么是分类而不是长滚动
+     *
+     * 原来 8 个分区（连接 / 自动连接 / 导航 / 音频 / 车辆 / 显示 / 诊断 /
+     * Android 9 兼容性）依次平铺在一列里，想找「显示」得先滚过前五段 ——
+     * 与 app 设置页改造前是同一种毛病。现在改成与 app 设置一致的
+     * **左侧竖排目录 + 右侧详情**。
+     *
+     * ## 关键约束：切页只改 visibility，绝不搬 View
+     *
+     * 这个菜单里的控件都绑定成员状态（`wirelessEnabled`、`hevcEnabled`、
+     * `mfiTarget`…），而且 `cancelSettingsEdits()` / `finishSettingsMenu()` /
+     * `captureSettingsBaseline()` 依赖它们在同一容器里被找到。若为了分页把控件
+     * "搬进"当前页，隐藏页的改动会丢、共享引用会拿到 null。
+     *
+     * 所以 [section] 只是**换一个 addView 的目标容器**，分区 View 始终挂在树上，
+     * 切页仅 `visibility = GONE` —— 与 `SettingsDock.addSection` 同一套思路。
+     */
     private fun buildSettingsMenu(): View {
         val overlay = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -1600,26 +1840,59 @@ class CarPlayHostActivity : ComponentActivity() {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(48), dp(36), dp(48), dp(36))
         }
-        content.addView(
-            menuText(getString(R.string.carplay_settings), 32f, Color.WHITE, bold = true).apply {
-                setPadding(dp(56), 0, 0, 0)
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
+
+        // ★ 分类骨架：左侧竖排目录 + 右侧详情。
+        //
+        // 下面那 897 行原本全部 `addToSection(...)`，我把 `content` 换成
+        // 「按当前分区路由的代理」—— 每个分区标题出现时就切一次目标容器，
+        // 于是原有 addView 一行都不用改，只是落到了对应的分类里。
+        val dock = ConnectedMenuDock(
+            context = this,
+            dockWidthDp = CONNECTED_MENU_DOCK_WIDTH_DP,
+            bodySizeSp = 18f,
+            captionSizeSp = 15f,
+            selectedColor = MENU_DOCK_SELECTED,
+            dividerColor = MENU_DOCK_DIVIDER,
+            accentColor = MENU_ACCENT,
+            dangerTextColor = MENU_DANGER,
+            minTouchDp = CONNECTED_MENU_MIN_TOUCH_DP,
+            textFactory = { t, size, color, bold -> menuText(t, size, color, bold = bold) },
         )
-        if (sessionDisplay?.viewAreas?.sidePanel() != null) {
-            content.addView(Button(this).apply {
-                text = getString(if (sidePanelShown) R.string.side_panel_full_screen else R.string.side_panel_show)
-                textSize = 20f
-                setOnClickListener {
-                    cancelSettingsEdits()
-                    showSidePanel(!sidePanelShown)
-                }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // 五 个分类。key 与下面的 settingsCategoryHeader 一一对应。
+        dock.addSection(KEY_MENU_CONNECTION, getString(R.string.connection)) {}
+        dock.addSection(KEY_MENU_DISPLAY, getString(R.string.settings_display)) {}
+        dock.addSection(KEY_MENU_NAVIGATION, getString(R.string.settings_navigation)) {}
+        dock.addSection(KEY_MENU_VEHICLE, getString(R.string.settings_vehicle)) {}
+        dock.addSection(KEY_MENU_AUDIO, getString(R.string.audio)) {}
+        // ★ v69: 新增「常用」分区 —— 把设置页里**不需要重连**的那批项
+        //   复制一份到双指下滑菜单。连着 CarPlay 时用户最想调的就是这几项，
+        //   而原来它们只在 app 设置页里，得先退出连接才能改。
+        //   全部按「显示 / 仪表 / 音频与通话 / 系统」分类，见 buildQuickSettingsSection。
+        dock.addSection(KEY_MENU_QUICK, getString(R.string.quick_settings)) {}
+        /** 当前分区；每遇一个 settingsCategoryHeader 就切一次。 */
+        var currentMenuSection = KEY_MENU_CONNECTION
+        /**
+         * 把控件加进**当前分区**（页脚等全局控件仍走 content）。
+         *
+         * 刻意做成局部**顶层**函数而不是 `LinearLayout` 的扩展 ——
+         * 调用点是裸 `addToSection(...)`，写成扩展会解析成"给 receiver 找成员"而报错。
+         */
+        fun addToSection(view: View, params: LinearLayout.LayoutParams) {
+            dock.add(currentMenuSection, view, params)
         }
-        content.addView(
+        //★ v69: 侧边面板开关原来是右侧页脚里的一个按钮 ——
+        //  它是**全局**操作（与分区无关），现在作为左侧目录的操作项。
+        if (sessionDisplay?.viewAreas?.sidePanel() != null) {
+            dock.addAction(
+                KEY_ACTION_SIDE_PANEL,
+                getString(if (sidePanelShown) R.string.side_panel_full_screen else R.string.side_panel_show),
+            ) {
+                cancelSettingsEdits()
+                showSidePanel(!sidePanelShown)
+            }
+        }
+        currentMenuSection = KEY_MENU_CONNECTION
+        addToSection(
             settingsCategoryHeader(getString(R.string.connection)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1627,7 +1900,7 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(32) },
         )
 
-        content.addView(
+        addToSection(
             buildMfiTargetSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1650,7 +1923,7 @@ class CarPlayHostActivity : ComponentActivity() {
             )
             requestStartupPrerequisites()
         }
-        content.addView(
+        addToSection(
             wirelessRowResult.rowView,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1658,7 +1931,7 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(30) },
         )
 
-        content.addView(
+        addToSection(
             buildHotspotModeSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1666,7 +1939,7 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(30) },
         )
 
-        content.addView(
+        addToSection(
             menuText(getString(R.string.hotspot_status), 20f, MENU_SECONDARY),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1674,7 +1947,7 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(18) },
         )
         val hotspotStatusView = menuText("", 16f, MENU_ACCENT)
-        content.addView(
+        addToSection(
             hotspotStatusView,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1682,14 +1955,15 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(6) },
         )
 
-        content.addView(
+        currentMenuSection = KEY_MENU_CONNECTION
+        addToSection(
             settingsCategoryHeader(getString(R.string.automatic_connection)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(36) },
         )
-        content.addView(
+        addToSection(
             settingsSwitchRow(
                 label = getString(R.string.auto_start_on_boot),
                 checked = autoStartOnBoot,
@@ -1704,14 +1978,15 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(12) },
         )
 
-        content.addView(
+        currentMenuSection = KEY_MENU_NAVIGATION
+        addToSection(
             settingsCategoryHeader(getString(R.string.settings_navigation)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(36) },
         )
-        content.addView(
+        addToSection(
             buildLocationReportingSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1720,14 +1995,15 @@ class CarPlayHostActivity : ComponentActivity() {
         )
 
         if (advancedAudioChannelMappingSupported) {
-            content.addView(
+        currentMenuSection = KEY_MENU_AUDIO
+        addToSection(
                 settingsCategoryHeader(getString(R.string.audio)),
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 ).apply { topMargin = dp(36) },
             )
-            content.addView(
+            addToSection(
                 settingsSwitchRow(
                     label = getString(R.string.advanced_audio_channel_mapping),
                     checked = advancedAudioChannelMapping,
@@ -1747,42 +2023,44 @@ class CarPlayHostActivity : ComponentActivity() {
             )
         }
 
-        content.addView(
+        currentMenuSection = KEY_MENU_VEHICLE
+        addToSection(
             settingsCategoryHeader(getString(R.string.settings_vehicle)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(36) },
         )
-        content.addView(
+        addToSection(
             buildIdentitySettingsSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(12) },
         )
-        content.addView(
+        addToSection(
             buildAirPlayIconSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(26) },
         )
-        content.addView(
+        addToSection(
             buildDrivingSideSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(26) },
         )
-        content.addView(
+        addToSection(
             buildDockSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(26) },
         )
-        content.addView(
+        currentMenuSection = KEY_MENU_DISPLAY
+        addToSection(
             settingsCategoryHeader(getString(R.string.settings_display)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1800,7 +2078,7 @@ class CarPlayHostActivity : ComponentActivity() {
             updateResolutionMenu()
         }
         val resolutionValue = resolutionControl.valueTextView
-        content.addView(
+        addToSection(
             resolutionControl.container,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1808,7 +2086,7 @@ class CarPlayHostActivity : ComponentActivity() {
             ),
         )
 
-        content.addView(
+        addToSection(
             buildStepSliderSection(
                 title = getString(R.string.frame_rate),
                 values = (
@@ -1828,7 +2106,7 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(24) },
         )
 
-        content.addView(
+        addToSection(
             settingsChoiceRow(
                 label = getString(R.string.physical_size_basis),
                 options = listOf(
@@ -1846,7 +2124,7 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(24) },
         )
 
-        content.addView(
+        addToSection(
             buildStepSliderSection(
                 title = getString(R.string.physical_length),
                 values = (
@@ -1880,7 +2158,7 @@ class CarPlayHostActivity : ComponentActivity() {
             )
             updateResolutionMenu()
         }
-        content.addView(
+        addToSection(
             hevcRow.rowView,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1902,7 +2180,7 @@ class CarPlayHostActivity : ComponentActivity() {
             updateResolutionMenu()
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            content.addView(
+            addToSection(
                 softwareHevcRow.rowView,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1911,7 +2189,7 @@ class CarPlayHostActivity : ComponentActivity() {
             )
         }
 
-        content.addView(
+        addToSection(
             buildSafeAreaSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1919,7 +2197,7 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(30) },
         )
 
-        content.addView(
+        addToSection(
             buildFullscreenSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1927,14 +2205,32 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(12) },
         )
 
-        content.addView(
+        // ★ v69: 免重连设置，按四类分组（显示 / 仪表 / 音频与通话 / 系统）。
+        currentMenuSection = KEY_MENU_QUICK
+        addToSection(
+            settingsCategoryHeader(getString(R.string.quick_settings)),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(36) },
+        )
+        addToSection(
+            buildQuickSettingsSection(),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(12) },
+        )
+
+        currentMenuSection = KEY_MENU_CONNECTION
+        addToSection(
             settingsCategoryHeader(getString(R.string.diagnostics)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(40) },
         )
-        content.addView(
+        addToSection(
             buildDebugLogsSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1943,14 +2239,15 @@ class CarPlayHostActivity : ComponentActivity() {
         )
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            content.addView(
+        currentMenuSection = KEY_MENU_DISPLAY
+        addToSection(
                 settingsCategoryHeader(getString(R.string.android_9_compatibility)),
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 ).apply { topMargin = dp(40) },
             )
-            content.addView(
+            addToSection(
                 menuText(
                     getString(R.string.settings_android9_compat),
                     16f,
@@ -1964,7 +2261,7 @@ class CarPlayHostActivity : ComponentActivity() {
         }
 
         val preview = menuText("", 17f, MENU_SECONDARY)
-        content.addView(
+        addToSection(
             preview,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1972,93 +2269,52 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(30) },
         )
 
-        val save = Button(this).apply {
-            text = getString(R.string.save_and_reconnect)
-            isAllCaps = false
-            textSize = 17f
-            setTextColor(MENU_BUTTON_TEXT)
-            backgroundTintList = ColorStateList.valueOf(MENU_ACCENT)
-            minHeight = dp(52)
-            setOnClickListener { saveSettingsAndReconnect() }
+        //★ v69: 原来这里是右侧底部常驻的 5 个按钮
+        //（保存并重连 / 退出应用 / 语言 / 手势 / 打开 app 设置），
+        // 在 1920×910 上要吃掉近 300 px，详情区被压得只剩半屏。
+        // 现在全部改成左侧目录里的操作项，右侧详情拿到整列高度。
+        dock.addAction(KEY_ACTION_SAVE, getString(R.string.save_and_reconnect), accent = true) {
+            saveSettingsAndReconnect()
         }
-        content.addView(
-            save,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(46) },
-        )
-
-        val exitApplicationButton = Button(this).apply {
-            text = getString(R.string.exit_application)
-            isAllCaps = false
-            textSize = 17f
-            setTextColor(Color.WHITE)
-            backgroundTintList = ColorStateList.valueOf(MENU_DANGER)
-            minHeight = dp(52)
-            setOnClickListener { exitApplication() }
+        dock.addAction(KEY_ACTION_APP_SETTINGS, "${getString(R.string.app_name)} ${getString(R.string.settings)}") {
+            cancelSettingsEdits()
+            showDiPlayHome("settings")
         }
-        content.addView(
-            exitApplicationButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-
-        content.addView(Button(this).apply {
-            text = getString(R.string.language_app_language)
-            isAllCaps = false
-            setOnClickListener { AppLocale.showPicker(this@CarPlayHostActivity) }
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-
-        val gestureButton = Button(this).apply {
-            isAllCaps = false
-            setOnClickListener {
-                gestureFingerCount = if (gestureFingerCount >= 4) 2 else gestureFingerCount + 1
-                text = getString(R.string.settings_gesture_fingers, gestureFingerCount)
-            }
+        dock.addAction(
+            KEY_ACTION_GESTURE,
+            // 手势按钮原来是循环切指头（2→3→4→2），这里保持同一语义。
+            getString(R.string.settings_gesture_fingers, gestureFingerCount),
+        ) {
+            gestureFingerCount = if (gestureFingerCount >= 4) 2 else gestureFingerCount + 1
+            dock.refreshActionLabel(KEY_ACTION_GESTURE, getString(R.string.settings_gesture_fingers, gestureFingerCount))
         }
-        gestureButton.text = getString(R.string.settings_gesture_fingers, gestureFingerCount)
-        content.addView(gestureButton, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-
-        val openDiPlaySettingsButton = Button(this).apply {
-            text = "${getString(R.string.app_name)} ${getString(R.string.settings)}"
-            isAllCaps = false
-            textSize = 17f
-            setTextColor(Color.WHITE)
-            backgroundTintList = ColorStateList.valueOf(MENU_TRACK_OFF)
-            minHeight = dp(52)
-            setOnClickListener {
-                cancelSettingsEdits()
-                showDiPlayHome("settings")
-            }
+        dock.addAction(KEY_ACTION_LANGUAGE, getString(R.string.language_app_language)) {
+            AppLocale.showPicker(this@CarPlayHostActivity)
         }
-        content.addView(
-            openDiPlaySettingsButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            addView(
-                content,
-                ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
+        dock.addAction(KEY_ACTION_EXIT, getString(R.string.exit_application), danger = true) {
+            exitApplication()
         }
+
+
+        //★ 左侧竖排目录 + 右侧详情（**无页脚** —— v69 起底部不留任何常驻控件）。
+        //
+        // 分区内容都已被 addToSection 路由进 dock 的各个容器，全局操作
+        // 已改成左侧目录里的 addAction 操作项。标题原本也被当成普通控件
+        // 路由了，所以这里另建一个给 dock。
+        val menuTitle = menuText(getString(R.string.carplay_settings), 26f, Color.WHITE, bold = true)
         panel.addView(
-            scroll,
+            dock.build(
+                titleView = menuTitle,
+                contentPaddingH = dp(28),
+                contentPaddingV = dp(20),
+            ),
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+        // 默认停在「连接」——与原先第一个分区一致，不改变用户的第一眼。
+        dock.showSection(KEY_MENU_CONNECTION)
         panel.addView(
             Button(this).apply {
                 text = "X"
@@ -2383,6 +2639,13 @@ class CarPlayHostActivity : ComponentActivity() {
         return section
     }
 
+    /**
+     * 分区标题。
+     *
+     * [menuSection] 是它归属的目录 key（见 [ConnectedMenuDock]）——
+     * 分类改造后标题本身不再进 `content`，而是进对应分区的容器，
+     * 这样切页时"标题 + 内容"一起隐藏，不会出现"标题留着、内容空了"。
+     */
     private fun settingsCategoryHeader(title: String): TextView =
         SettingsWidgets.createCategoryHeader(this, title, SettingsTheme.OVERLAY)
 
@@ -2629,6 +2892,224 @@ class CarPlayHostActivity : ComponentActivity() {
 
     // Between the driver's side and the bottom the dock moves at once (and is saved at once) when the
     // running session declared both; to or from automatic waits for Save, which reconnects.
+    /**
+     * ★ v69: 「常用设置」—— 设置页里**不需要重连**的那批项，按四类分组。
+     *
+     * ## 为什么是复制而不是搬家
+     *
+     * 用户的原话是「增加设置中所有不需要重连的设置项」。搬走会让 app 设置页
+     * 少东西（未连接时反而没处调），复制则两处都能改 —— 且它们都只写
+     * SharedPreferences，两边看到的是同一份值，不会分叉。
+     *
+     * ## 为什么只放"高价值的一批"
+     *
+     * 判据是**连着 CarPlay 时真的会想调**：
+     * - 免重连（改完立刻生效）
+     * - 高频（昼夜、仪表卡、音频路由这类每天都要动的）
+     *
+     * 明确**不**搬的：仪表卡的几何滑块。它们要在1920×910 的预览上调，
+     * 塞进这个菜单既挤又看不清；而 `prefersSliders` 那类要拖动的控件在
+     * 1920×910 的 overlay 菜单里手感很差。
+     *
+     * ## 分类依据
+     *
+     * 按「改的是什么」分，不按设置页原顺序 —— 免重连项横跨原来好几个分区，
+     * 混着排的话用户找不到。分组标题与内容一一对应，一眼能扫完。
+     */
+    private fun buildQuickSettingsSection(): View {
+        val section = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        /**
+         * 分组小标题。带一点上边距，让四组之间有呼吸。
+         */
+        fun groupHeader(title: String) {
+            section.addView(
+                menuText(title, 17f, MENU_SECONDARY, bold = true),
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = dp(24) },
+            )
+        }
+
+        fun add(view: View) {
+            section.addView(
+                view,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = dp(10) },
+            )
+        }
+
+        // ── 显示 ────────────────────────────────────────────────
+        groupHeader(getString(R.string.quick_group_display))
+        // 昼夜模式：车机常年报 UI_MODE_NIGHT_UNDEFINED，跟系统等于永远不切，
+        //   所以这一项在车机上是最常用的 —— 不放进来等于让用户没法在车上切白天/夜间。
+        val nightModes = CarPlayNightMode.entries
+        add(
+            settingsChoiceRow(
+                label = getString(R.string.carplay_night_mode),
+                options = nightModes.map { it to nightModeLabel(it) },
+                selected = AirPlayPersistence.loadCarPlayNightMode(this),
+            ) { mode ->
+                AirPlayPersistence.saveCarPlayNightMode(this, mode)
+                appendLog("CarPlay day/night ${mode.name}; applies immediately")
+                // 系统栏要立刻跟着变，否则改完还是旧配色，看着像没生效。
+                SystemBars.apply(this, mode == CarPlayNightMode.NIGHT)
+                updateResolutionMenu()
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.hide_top_bar),
+                checked = AirPlayPersistence.loadHideTopBar(this),
+                description = getString(R.string.quick_no_reconnect_hint),
+            ) { checked ->
+                AirPlayPersistence.saveHideTopBar(this, checked)
+                appendLog("Hide top bar ${if (checked) "on" else "off"}; applies immediately")
+                updateResolutionMenu()
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.hide_bottom_bar),
+                checked = AirPlayPersistence.loadHideBottomBar(this),
+                description = getString(R.string.quick_no_reconnect_hint),
+            ) { checked ->
+                AirPlayPersistence.saveHideBottomBar(this, checked)
+                appendLog("Hide bottom bar ${if (checked) "on" else "off"}; applies immediately")
+                updateResolutionMenu()
+            },
+        )
+
+        // ── 仪表 ────────────────────────────────────────────────
+        groupHeader(getString(R.string.cluster_display))
+        // 地图总开关：不给的话用户在仪表上什么都看不到，只能退出连接去 app 设置改。
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.carplay_map_on_instrument_cluster_experimental),
+                checked = AirPlayPersistence.loadClusterMapEnabled(this),
+                description = getString(R.string.quick_cluster_map_hint),
+            ) { checked ->
+                AirPlayPersistence.saveClusterMapEnabled(this, checked)
+                appendLog("Cluster map ${if (checked) "on" else "off"}; applies immediately")
+                updateResolutionMenu()
+            },
+        )
+        // 三张卡的开关：同样是"看不到但不知道去哪开"的典型。
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.cluster_media_card),
+                checked = AirPlayPersistence.loadClusterMediaCardEnabled(this),
+                description = getString(R.string.cluster_media_card_description),
+            ) { checked ->
+                AirPlayPersistence.saveClusterMediaCardEnabled(this, checked)
+                appendLog("Cluster media card ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.cluster_junction_card),
+                checked = AirPlayPersistence.loadClusterJunctionCardEnabled(this),
+                description = getString(R.string.cluster_junction_card_description),
+            ) { checked ->
+                AirPlayPersistence.saveClusterJunctionCardEnabled(this, checked)
+                appendLog("Cluster junction card ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.cluster_call_card),
+                checked = AirPlayPersistence.loadClusterCallCardEnabled(this),
+                description = getString(R.string.cluster_call_card_description),
+            ) { checked ->
+                AirPlayPersistence.saveClusterCallCardEnabled(this, checked)
+                appendLog("Cluster call card ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.b561_vehicle_status),
+                checked = AirPlayPersistence.loadB561VehicleStatusToIphone(this),
+                description = getString(R.string.b561_vehicle_status_description),
+            ) { checked ->
+                AirPlayPersistence.saveB561VehicleStatusToIphone(this, checked)
+                appendLog("Vehicle data to phone ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
+
+        // ── 音频与通话 ──────────────────────────────────────────
+        groupHeader(getString(R.string.audio))
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.call_voice_filter),
+                checked = AirPlayPersistence.loadCallVoiceFilter(this),
+                description = getString(R.string.call_voice_filter_description),
+            ) { checked ->
+                //回声消除**要**重连（动的是音频通路），语音过滤不用 ——
+                //   它只是链路里的一层软件滤波。所以这里只放后者。
+                AirPlayPersistence.saveCallVoiceFilter(this, checked)
+                appendLog("Call voice filter ${if (checked) "on" else "off"}")
+            },
+        )
+
+        // ── 系统 ────────────────────────────────────────────────
+        groupHeader(getString(R.string.settings_advanced))
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.auto_start_on_boot),
+                checked = AirPlayPersistence.loadAutoStartOnBoot(this),
+                description = getString(R.string.quick_no_reconnect_hint),
+            ) { checked ->
+                AirPlayPersistence.saveAutoStartOnBoot(this, checked)
+                appendLog("Auto-start on boot ${if (checked) "on" else "off"}")
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.debug_logs),
+                checked = AirPlayPersistence.loadDebugLogsEnabled(this),
+                description = getString(R.string.quick_no_reconnect_hint),
+            ) { checked ->
+                AirPlayPersistence.saveDebugLogsEnabled(this, checked)
+                appendLog("Debug logs ${if (checked) "on" else "off"}")
+            },
+        )
+
+        section.addView(
+            menuText(getString(R.string.quick_settings_footer), 16f, MENU_SECONDARY),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(20) },
+        )
+        return section
+    }
+
+    /**
+     * 昼夜模式的本地化标签。
+     *
+     * 与设置页里那份重复而不是抽公共函数：设置页用的是 `getString(when ...)`，
+     * 这里的泛型是 `CarPlayNightMode`；为一行 when 抽一个跨文件的映射表
+     * 收益低于它带来的耦合。真要统一，两边一起改成这个函数。
+     */
+    private fun nightModeLabel(mode: CarPlayNightMode): String = getString(
+        when (mode) {
+            CarPlayNightMode.SYSTEM -> R.string.carplay_night_system
+            CarPlayNightMode.AMBIENT -> R.string.carplay_night_ambient
+            CarPlayNightMode.DAY -> R.string.carplay_night_day
+            CarPlayNightMode.NIGHT -> R.string.carplay_night_night
+            CarPlayNightMode.SCHEDULE -> R.string.carplay_night_schedule
+        },
+    )
+
     private fun buildDockSection(): View {
         val section = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -3754,6 +4235,9 @@ class CarPlayHostActivity : ComponentActivity() {
             navigationChannel = AirPlayPersistence.loadNavigationAudioChannel(this),
             context = this,
             navigationStreamType = navigationStreamType,
+            navigationVoiceScope = AirPlayPersistence.loadNavigationVoiceScope(this),
+            navigationActive = clusterTurnGuidance != null,
+            systemAudioRouting = AirPlayPersistence.loadSystemAudioRouting(this),
             onScreenStreamActiveChanged = { type, active ->
                 onScreenStreamStateChanged(controllerGeneration, type, active)
             },
@@ -4050,10 +4534,14 @@ class CarPlayHostActivity : ComponentActivity() {
             savePairRecord = { record -> AirPlayPersistence.saveLockdownRecord(this, record) },
             clearPairRecord = { AirPlayPersistence.clearLockdownRecord(this) },
             locationProvider = locationProvider,
-            vehicleStatusProvider = if (com.shilapi.xcertplay.hud.BydOutputSettings.batteryToIphoneActive(this)) {
-                com.shilapi.xcertplay.hud.BydNavigationOutputs.batteryStatus(applicationContext)
-            } else {
-                null
+            vehicleStatusProvider = when {
+                // ★ B561: 走标准 VHAL，而不是上游那条比亚迪 ADB+SOME/IP 路径
+                //   （`BydBatteryStatus` 读的是比亚迪电池服务私有通道，B561 永远读不到）。
+                vehicleStatusToIphoneEnabled() -> b561VehicleStatus
+                // 比亚迪车机保留原路径。
+                com.shilapi.xcertplay.hud.BydOutputSettings.batteryToIphoneActive(this) ->
+                    com.shilapi.xcertplay.hud.BydNavigationOutputs.batteryStatus(applicationContext)
+                else -> null
             },
         )
         controller = next
@@ -4946,6 +5434,9 @@ class CarPlayHostActivity : ComponentActivity() {
         // this budget when a codec is still busy.
         const val SINK_RELEASE_WAIT_MILLIS = 2_000L
         private const val CENTER_MAP_IDLE_MILLIS = 3_000L // a reconnect is quicker; a session end is not
+
+        /** B561: 仪表通话卡轮询周期。通话是低频事件（响铃/接通/挂断），1 秒足够。 */
+        private const val CLUSTER_CALL_POLL_MILLIS = 1_000L
         const val LOG_RETENTION_MILLIS = 5 * 60_000L
         const val DISPLAY_CHANGE_DEBOUNCE_MILLIS = 500L
         const val CONFIGURATION_POLL_INTERVAL_MILLIS = 2_000L
@@ -4958,6 +5449,28 @@ class CarPlayHostActivity : ComponentActivity() {
         const val SETTINGS_SWIPE_DISTANCE_DP = 72
         const val SETTINGS_SWIPE_DIRECTION_RATIO = 1.15f
         const val MAX_SETTINGS_MENU_WIDTH_PX = 1200
+        const val CONNECTED_MENU_DOCK_WIDTH_DP = 200
+        const val CONNECTED_MENU_MIN_TOUCH_DP = 56
+        val MENU_DOCK_SELECTED = Color.rgb(127, 205, 154)
+        val MENU_DOCK_DIVIDER = Color.rgb(40, 48, 54)
+
+        // 连接后双指下滑菜单的五个分类（左侧竖排目录项）。
+        // 与下面 buildSettingsMenu 里的分区归属一一对应。
+        private const val KEY_MENU_CONNECTION = "menu_connection"
+        private const val KEY_MENU_DISPLAY = "menu_display"
+        private const val KEY_MENU_NAVIGATION = "menu_navigation"
+        private const val KEY_MENU_VEHICLE = "menu_vehicle"
+        private const val KEY_MENU_AUDIO = "menu_audio"
+        private const val KEY_MENU_QUICK = "menu_quick"
+
+        //★ v69: 左侧目录里的**操作项** key（不切页，点一下直接执行）。
+        //  这些操作原先是右侧底部常驻的 5 个按钮 + 侧边面板开关。
+        private const val KEY_ACTION_SIDE_PANEL = "action_side_panel"
+        private const val KEY_ACTION_SAVE = "action_save_reconnect"
+        private const val KEY_ACTION_APP_SETTINGS = "action_app_settings"
+        private const val KEY_ACTION_GESTURE = "action_gesture"
+        private const val KEY_ACTION_LANGUAGE = "action_language"
+        private const val KEY_ACTION_EXIT = "action_exit"
         val MENU_BACKGROUND = Color.rgb(12, 16, 19)
         val MENU_SECONDARY = Color.rgb(170, 180, 190)
         val MENU_ACCENT = Color.rgb(127, 205, 154)

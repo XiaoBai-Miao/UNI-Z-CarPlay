@@ -6,23 +6,45 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/**
+ * B561: 媒体卡的数据契约。
+ *
+ * `ClusterSong` 除了拼好的单行 [ClusterSong.text]（比亚迪仪表只显示一行），
+ * 还携带**原始的** [ClusterSong.title] 与 [ClusterSong.artist] ——
+ * 我们的悬浮媒体卡要分两行显示，需要未拼接的值。
+ *
+ * 所以下面每条断言都显式写出 title/artist：它们是媒体卡渲染的直接输入，
+ * 漏测等于把"歌手行为空"这类问题留给实车发现。
+ */
 class BydClusterSongTest {
     private fun update(block: com.shilapi.xcertplay.iap2.body.Iap2BodyBuilder.() -> Unit) =
         Iap2Messages.buildRaw(ClusterSongState.NOW_PLAYING_UPDATE, block)
+
+    private fun song(
+        text: String,
+        playing: Boolean,
+        line: String = text,
+        artist: String? = null,
+        title: String? = null,
+    ) = ClusterSong(text, playing, line, source = null, artist = artist, title = title)
 
     @Test
     fun followsTitleArtistAndPlaybackStatus() {
         val state = ClusterSongState()
 
-        assertEquals(ClusterSong("Numb — Linkin Park", false, "Numb"),
+        assertEquals(song("Numb — Linkin Park", false, "Numb", artist = "Linkin Park", title = "Numb"),
             state.accept(update { group(0) { string(1, "Numb"); string(12, "Linkin Park") } }))
-        assertEquals(ClusterSong("Numb — Linkin Park", true, "Numb"), state.accept(update { group(1) { u8(0, 1) } }))
+        assertEquals(song("Numb — Linkin Park", true, "Numb", artist = "Linkin Park", title = "Numb"),
+            state.accept(update { group(1) { u8(0, 1) } }))
         // Elapsed time alone changes nothing on the card.
         assertNull(state.accept(update { group(1) { u32(1, 120_706L) } }))
-        assertEquals(ClusterSong("Numb — Linkin Park", false, "Numb"), state.accept(update { group(1) { u8(0, 2) } }))
+        assertEquals(song("Numb — Linkin Park", false, "Numb", artist = "Linkin Park", title = "Numb"),
+            state.accept(update { group(1) { u8(0, 2) } }))
         // A title-only incremental update retains the last artist.
-        assertEquals(ClusterSong("Podcast — Linkin Park", false, "Podcast"), state.accept(update { group(0) { string(1, "Podcast") } }))
-        assertEquals(ClusterSong("Podcast — Host", false, "Podcast"), state.accept(update { group(0) { string(12, "Host") } }))
+        assertEquals(song("Podcast — Linkin Park", false, "Podcast", artist = "Linkin Park", title = "Podcast"),
+            state.accept(update { group(0) { string(1, "Podcast") } }))
+        assertEquals(song("Podcast — Host", false, "Podcast", artist = "Host", title = "Podcast"),
+            state.accept(update { group(0) { string(12, "Host") } }))
     }
 
     @Test
@@ -45,11 +67,12 @@ class BydClusterSongTest {
         assertNull(state.current())
         state.accept(update { group(1) { u8(0, 1) } })
         assertNull(state.current())
-        assertEquals(ClusterSong("Next song", true),
+        // ★ 新歌不带歌手 → artist 必须为 null，媒体卡据此不画空行。
+        assertEquals(song("Next song", true, "Next song", artist = null, title = "Next song"),
             state.accept(update { group(0) { string(1, "Next song") } }))
         state.accept(update { group(0) { string(1, "  "); string(12, "Stale artist") } })
         assertNull(state.current())
-        assertEquals(ClusterSong("After clear", true),
+        assertEquals(song("After clear", true, "After clear", artist = null, title = "After clear"),
             state.accept(update { group(0) { string(1, "After clear") } }))
     }
 
@@ -60,19 +83,21 @@ class BydClusterSongTest {
             group(0) { string(1, "Track"); string(12, "Artist") }
             group(1) { u8(0, 1) }
         })
-        assertEquals(ClusterSong("Lyric line — Artist", true, "Lyric line"),
+        assertEquals(song("Lyric line — Artist", true, "Lyric line", artist = "Artist", title = "Lyric line"),
             state.accept(update { group(0) { string(1, "Lyric line") } }))
         assertNull(state.accept(update { group(0) { u32(4, 180_000L) } }))
-        assertEquals(ClusterSong("Lyric line — Artist", true, "Lyric line"), state.current())
+        assertEquals(song("Lyric line — Artist", true, "Lyric line", artist = "Artist", title = "Lyric line"),
+            state.current())
     }
 
     @Test
     fun explicitEmptyArtistClearsItWithoutChangingTitleOrPlayback() {
         val state = ClusterSongState()
         state.accept(update { group(0) { string(1, "Track"); string(12, "Artist") } })
-        assertEquals(ClusterSong("Track", false),
+        // ★ 显式空歌手 → artist 归零，但歌名与播放状态不动。
+        assertEquals(song("Track", false, "Track", artist = null, title = "Track"),
             state.accept(update { group(0) { string(12, "") } }))
-        assertEquals(ClusterSong("Next line", false),
+        assertEquals(song("Next line", false, "Next line", artist = null, title = "Next line"),
             state.accept(update { group(0) { string(1, "Next line") } }))
     }
 
@@ -80,9 +105,11 @@ class BydClusterSongTest {
     fun completeTrackUpdateReplacesBothTitleAndArtist() {
         val state = ClusterSongState()
         state.accept(update { group(0) { string(1, "First track"); string(12, "First artist") } })
-        assertEquals(ClusterSong("Second track — Second artist", false, "Second track"),
-            state.accept(update { group(0) { string(1, "Second track"); string(12, "Second artist") } }))
-        assertEquals(ClusterSong("Third track", false),
+        assertEquals(
+            song("Second track — Second artist", false, "Second track", artist = "Second artist", title = "Second track"),
+            state.accept(update { group(0) { string(1, "Second track"); string(12, "Second artist") } }),
+        )
+        assertEquals(song("Third track", false, "Third track", artist = null, title = "Third track"),
             state.accept(update { group(0) { string(1, "Third track"); string(12, "") } }))
     }
 

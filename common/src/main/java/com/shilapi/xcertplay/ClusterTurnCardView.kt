@@ -25,7 +25,7 @@ import com.shilapi.xcertplay.hud.ClusterTurnGuidance
  * Maneuver glyphs are Material Symbols (Apache 2.0), tinted the system blue; the roundabout
  * exit number sits in a small badge on the glyph.
  */
-internal class ClusterTurnCardView(context: Context) : View(context) {
+internal class ClusterTurnCardView(context: Context) : View(context), ClusterTurnCardOverlayHost {
     private var guidance: ClusterTurnGuidance? = null
     private var night = false
     private var xPercent = ClusterTurnCardOverlay.DEFAULT_X_PERCENT
@@ -61,7 +61,7 @@ internal class ClusterTurnCardView(context: Context) : View(context) {
 
     init { applyPalette() }
 
-    fun setLayout(xPercent: Int, yPercent: Int, sizePercent: Int) {
+    override fun setLayout(xPercent: Int, yPercent: Int, sizePercent: Int) {
         this.xPercent = xPercent
         this.yPercent = yPercent
         this.sizePercent = sizePercent
@@ -69,7 +69,7 @@ internal class ClusterTurnCardView(context: Context) : View(context) {
     }
 
     /** Percent 20..100 of the card's background alpha; text stays readable at any value. */
-    fun setOpacity(percent: Int) {
+    override fun setOpacity(percent: Int) {
         val next = percent.coerceIn(20, 100)
         if (next == opacityPercent) return
         opacityPercent = next
@@ -77,14 +77,20 @@ internal class ClusterTurnCardView(context: Context) : View(context) {
         invalidate()
     }
 
-    /** Day: dark glass on a light map; night: lighter translucent panel for the dark map. */
-    fun setNightMode(night: Boolean) {
+    /** Day: light card on a light map; night: dark glass on the dark map. */
+    override fun setNightMode(night: Boolean) {
         if (night == this.night) return
         this.night = night
         applyPalette()
         invalidate()
     }
 
+    /**
+     * **Day: light card + dark text on a light map; night: dark glass + light text on the dark map.**
+     *
+     * B561 v67: 白天原先也是深色卡片（28,28,30）压在 iPhone 浅色地图上，
+     * 像一块脏补丁且白字在亮底上几乎不可读 —— 现在白天走浅色卡片 + 深色字。
+     */
     private fun applyPalette() {
         val alpha = (opacityPercent * 255 / 100).coerceIn(51, 255)
         if (night) {
@@ -95,14 +101,16 @@ internal class ClusterTurnCardView(context: Context) : View(context) {
             roadPaint.color = Color.argb(179, 176, 182, 192)
             infoPaint.color = Color.argb(224, 226, 228, 236)
             badgePaint.color = accent
+            badgeTextPaint.color = Color.WHITE
         } else {
-            glassPaint.color = Color.argb(alpha, 28, 28, 30)
-            chipPaint.color = Color.argb((alpha * 0.18f).toInt().coerceAtLeast(12), 255, 255, 255)
-            strokePaint.color = Color.argb((alpha * 0.15f).toInt().coerceAtLeast(10), 255, 255, 255)
-            distancePaint.color = Color.WHITE
-            roadPaint.color = Color.argb(179, 199, 199, 204)
-            infoPaint.color = Color.argb(224, 235, 235, 240)
+            glassPaint.color = Color.argb(alpha, 250, 251, 253)
+            chipPaint.color = Color.argb((alpha * 0.10f).toInt().coerceAtLeast(8), 16, 22, 32)
+            strokePaint.color = Color.argb((alpha * 0.22f).toInt().coerceAtLeast(12), 16, 22, 32)
+            distancePaint.color = Color.argb(255, 18, 22, 30)
+            roadPaint.color = Color.argb(190, 88, 98, 114)
+            infoPaint.color = Color.argb(224, 52, 60, 74)
             badgePaint.color = accent
+            badgeTextPaint.color = Color.WHITE
         }
     }
 
@@ -116,6 +124,9 @@ internal class ClusterTurnCardView(context: Context) : View(context) {
         bringToFront()
         invalidate()
     }
+
+    /** 是否有内容可画。给设置页的预览用 —— 没内容就不该画空壳卡片。 */
+    fun hasContent(): Boolean = guidance != null
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         setMeasuredDimension(

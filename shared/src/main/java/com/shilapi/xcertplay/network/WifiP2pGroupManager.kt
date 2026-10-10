@@ -546,6 +546,8 @@ class WifiP2pGroupManager(
                     ?: group.owner?.deviceAddress?.takeIf { it.isNotBlank() },
                 interfaceName = interfaceName,
                 hostAddress = hostAddress,
+                // ★ B561: 带上全部地址族，否则 mDNS 只监听一个族（实测 30s 发现不到）
+                hostAddresses = allInterfaceAddresses(interfaceName, hostAddress),
                 bandLabel = band,
                 backend = WirelessHotspotBackend.WIFI_P2P,
             )
@@ -612,6 +614,8 @@ class WifiP2pGroupManager(
                     ?: group.owner?.deviceAddress?.takeIf { it.isNotBlank() },
                 interfaceName = interfaceName,
                 hostAddress = hostAddress,
+                // ★ B561: 同上，带上全部地址族
+                hostAddresses = allInterfaceAddresses(interfaceName, hostAddress),
                 bandLabel = if (requestedChannel == UNKNOWN_CHANNEL) "Auto"
                     else WifiP2pLegacyChannels.bandLabelFor(requestedChannel),
                 backend = WirelessHotspotBackend.WIFI_P2P,
@@ -674,6 +678,45 @@ class WifiP2pGroupManager(
     } catch (interrupted: InterruptedException) {
         Thread.currentThread().interrupt()
         throw IOException("Interrupted while waiting for Wi-Fi P2P", interrupted)
+    }
+
+    /**
+     * B561: 收集 P2P 接口上的**全部**可用地址（IPv4 + IPv6 link-local）。
+     *
+     * ## 为什么必须收集全部（实车日志坐实）
+     *
+     * `WirelessHotspotInfo.hostAddresses` 默认只有 `listOfNotNull(hostAddress)`（单个），
+     * 而 `CarPlayController` 用它构造 mDNS 的 `additionalAddresses`：
+     * ```kotlin
+     * additionalAddresses = hotspotInfo.hostAddresses.filter { it != hostAddress }
+     * ```
+     * 单地址时这个列表**恒为空** → `CarPlayBonjour` 只注册了 `hostAddress` 那一个地址族，
+     * 实车诊断快照就能看到：
+     * ```
+     * bonjourAdded=0 bonjourResolved=0  mdnsFamilies=IPv4
+     * wireless startup elapsedMs=30118 waitingFor=WiFi_discovery_or_AirPlay_TCP
+     * ```
+     * 即 30 秒一个 CarPlay 服务都没发现。而 iPhone 在 P2P 上**优先广播 IPv6 link-local**
+     * ——只听 IPv4 就永远等不到。
+     *
+     * 双栈能力本身是有的（`CarPlayBonjourDualStackTest` 断言 `mdnsFamilies=IPv6,IPv4`），
+     * 缺的只是这里把地址凑齐。
+     */
+    private fun allInterfaceAddresses(
+        interfaceName: String,
+        primary: InetAddress?,
+    ): List<InetAddress> {
+        val networkInterface = networkInterface(interfaceName)
+            ?: return listOfNotNull(primary)
+        val all = Collections.list(networkInterface.inetAddresses)
+        // ★ IPv4 在前、IPv6 在后 —— 跟 CarPlayBonjour 的发布顺序一致，
+        //   也让 hostAddresses[0] 天然是主地址。
+        val ordered = all.sortedBy { if (it is Inet6Address) 1 else 0 }
+        // LinkedHashSet：去重但保持顺序，且 primary 一定排第一
+        return LinkedHashSet<InetAddress>().apply {
+            primary?.let(::add)
+            ordered.forEach(::add)
+        }.toList()
     }
 
     private fun interfaceAddress(interfaceName: String): InetAddress? {

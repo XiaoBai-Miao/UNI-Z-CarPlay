@@ -50,6 +50,13 @@ internal class AudioFocusCoordinator(
     private var requestedChannel: AudioChannel? = null
     private var mediaVolume = FULL_VOLUME
     private var closed = false
+    /**
+     * B561:焦点由外部（`CarPlayMediaKeys` 的媒体键会话）持有时为 true。
+     *
+     * 此时本类**不再自己申请**焦点 —— 同进程两份焦点请求会互相顶掉，
+     * 详见 [setExternallyHeldFocus] 的注释。
+     */
+    private var externalFocusHeld = false
     private var focusGeneration = 0L
     private var currentListener = listenerFor(focusGeneration)
     internal val listener: AudioManager.OnAudioFocusChangeListener get() = currentListener
@@ -77,9 +84,35 @@ internal class AudioFocusCoordinator(
 
     @Synchronized
     fun acquire(track: AudioTrack, channel: AudioChannel, attributes: AudioAttributes) {
-        if (closed || !enabled || manager == null || channel == AudioChannel.NAVIGATION) return
+        // ★ 这条 early-return 曾经让"焦点从不申请"完全静默：
+        //   实测日志里 focus=on 但requestAudioFocus 0 次，谁都看不出是哪条条件挡住了。
+        //   现在逐条说明去留 —— 被挡住时必须留下原因。
+        if (closed) {
+            Log.i(TAG, "Audio: focus acquire skipped reason=closed")
+            return
+        }
+        if (!enabled) {
+            Log.i(TAG, "Audio: focus acquire skipped reason=audio_focus_disabled")
+            return
+        }
+        if (manager == null) {
+            Log.e(TAG, "Audio: focus acquire skipped reason=no_AudioManager")
+            return
+        }
+        if (channel == AudioChannel.NAVIGATION) {
+            Log.i(TAG, "Audio: focus acquire skipped reason=navigation_overlays_without_ducking")
+            return
+        }
+        // B561: UI 提示音（打字/点击咔哒声）同样不申请焦点。
+        //   它是几十毫秒的反馈音，抢焦点会把音乐顶掉 —— 实测"打字时歌停一下"。
+        if (channel == AudioChannel.SYSTEM) {
+            Log.i(TAG, "Audio: focus acquire skipped reason=system_sonification_overlays_without_ducking")
+            return
+        }
+        Log.i(TAG, "Audio: focus acquire channel=$channel externalHeld=$externalFocusHeld active=${active.size}")
         active[track] = Entry(channel, attributes)
-        refreshRequest()
+        // ★ 外部已持有焦点时不要自己再申请（同进程会互踢），只更新音量。
+        if (!externalFocusHeld) refreshRequest()
         applyMediaVolume(track, active.getValue(track))
     }
 
@@ -93,6 +126,51 @@ internal class AudioFocusCoordinator(
         current.onAudioFocusChange(change)
     }
 
+    /**
+     * B561: 声明"焦点由外部（同进程的媒体键会话）持有"。
+     *
+     * ## 为什么需要它（实车日志坐实的根因）
+     *
+     * 本进程里原本有**两份**独立的音频焦点请求：
+     * 1. `CarPlayMediaKeys`（给 MediaSession / 系统媒体键），clientId = `…CarPlayMediaKeys$$…Lambda1`
+     * 2. 本类（给真正的播放声道），clientId = `…AudioFocusCoordinator$$…Lambda0`
+     *
+     * Android 的焦点按**进程**判定，**同进程后申请的会顶掉先申请的**。实车日志里能直接看到
+     * 自己把自己踢掉：
+     * ```
+     * 19:02:18.385 requestAudioFocus com.oushang.carplay req=1(GAIN)  ← CarPlayMediaKeys
+     * 19:02:18.590 requestAudioFocus com.oushang.carplay req=1(GAIN)  ← AudioFocusCoordinator
+     * 19:02:18.707 dispatching onAudioFocusChange(-1) → CarPlayMediaKeys$…Lambda1
+     * ```
+     * **LOSS 前面没有任何别人的 request** → 不是被抢，是自己两份请求互踩。
+     * 焦点链一断，iPhone 侧就把 CarPlay 判成暂停（车机音频其实还在播，
+     * `rebuffers=0 playing=true`）。
+     *
+     * 开了这个模式后本类**不再自己申请**，只接收 [onExternalFocusChange]，
+     * 全进程只留 `CarPlayMediaKeys` 那一份焦点。
+     *
+     * @param held 外部是否正持有焦点。
+     */
+    @Synchronized
+    fun setExternallyHeldFocus(held: Boolean) {
+        if (externalFocusHeld == held) return
+        externalFocusHeld = held
+        Log.i(TAG, "Audio: external focus held=$held")
+        if (held) {
+            // 外部接管：立刻放弃自己那份（同进程不能共存），音量恢复满。
+            focusGeneration += 1
+            val abandoned = request
+            request = null
+            requestedChannel = null
+            mediaVolume = FULL_VOLUME
+            abandoned?.let { manager?.abandonAudioFocusRequest(it) }
+            active.forEach { (track, entry) -> applyMediaVolume(track, entry) }
+        } else {
+            // 外部放手：重新自己申请，让焦点回到播放声道。
+            refreshRequest()
+        }
+    }
+
     @Synchronized
     fun close() {
         if (closed) return
@@ -102,6 +180,12 @@ internal class AudioFocusCoordinator(
     }
 
     private fun refreshRequest() {
+        // ★ 外部（媒体键会话）正持有焦点时不碰 —— 两份请求同进程会互相顶掉。
+        if (externalFocusHeld) {
+            Log.i(TAG, "Audio: focus refresh skipped reason=held_externally")
+            active.forEach { (track, entry) -> applyMediaVolume(track, entry) }
+            return
+        }
         val primary = active.values.maxByOrNull { it.channel.focusPriority() }
         if (primary == null) {
             focusGeneration += 1
@@ -119,7 +203,7 @@ internal class AudioFocusCoordinator(
             AudioChannel.MEDIA -> AudioManager.AUDIOFOCUS_GAIN
             AudioChannel.PHONE -> AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
             AudioChannel.ASSISTANT -> AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
-            AudioChannel.NAVIGATION -> return
+            AudioChannel.NAVIGATION, AudioChannel.SYSTEM -> return
         }
         currentListener = listenerFor(focusGeneration)
         val next = AudioFocusRequest.Builder(gain)
@@ -129,6 +213,7 @@ internal class AudioFocusCoordinator(
         request = next
         requestedChannel = primary.channel
         val result = manager?.requestAudioFocus(next)
+        Log.i(TAG, "Audio: focus requested channel=${primary.channel} gain=$gain result=$result externalHeld=$externalFocusHeld")
         if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) setMediaVolume(FULL_VOLUME)
         val line = "Audio: focus requested channel=${primary.channel} gain=$gain granted=$result activeTracks=${active.size}"
         Log.i(TAG, line)
@@ -153,6 +238,8 @@ internal class AudioFocusCoordinator(
         AudioChannel.PHONE -> 2
         AudioChannel.ASSISTANT -> 1
         AudioChannel.NAVIGATION -> 0
+        // 提示音不参与焦点竞争；给 0 与 NAVIGATION 同级，纯为了让 when 穷尽。
+        AudioChannel.SYSTEM -> 0
     }
 
     private companion object {
@@ -181,6 +268,17 @@ class AndroidMediaSink(
     private val navigationChannel: Int = 0,
     context: Context? = null,
     private val navigationStreamType: Int = AudioChannelMapper.DEFAULT_NAVIGATION_STREAM_TYPE,
+    /**
+     * B561: `default` 流是否允许进「只主驾发声」的导航声区。
+     *
+     * 与 [setNavigationActive] 一起决定 —— 该流上既有导航语音也有 UI 咔哒声，
+     * 详见 [NavigationVoiceScope]。
+     */
+    @Volatile private var navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.GUIDANCE_ONLY,
+    /** B561: 当前是否有导航路线。供上面那条判断用，运行时由 host 更新。 */
+    @Volatile private var navigationActive: Boolean = false,
+    /** B561: `alert`/`compatibility` 是否走系统提示音声道（关掉即回到上游行为）。 */
+    private val systemAudioRouting: Boolean = true,
     onScreenStreamActiveChanged: ((Int, Boolean) -> Unit)? = null,
     private val mediaBufferMillis: Int = MediaAudioBuffer.DEFAULT_MILLIS,
     private val onAudioDiagnostic: (String) -> Unit = {},
@@ -211,6 +309,45 @@ class AndroidMediaSink(
     /** The media-key session may own Android's current focus request for this same sink. */
     fun onMediaAudioFocusChanged(change: Int) {
         audioFocusCoordinator.onExternalFocusChange(change)
+    }
+
+    /**
+     * B561: 媒体键会话已持有焦点，本sink 不再自己申请。
+     *
+     * 由 `CarPlayMediaKeys.onFocusChanged` 在焦点回调时调用 ——
+     * 理由与实车日志证据见 [AudioFocusCoordinator.setExternallyHeldFocus]。
+     */
+    fun setExternallyHeldFocus(held: Boolean) {
+        audioFocusCoordinator.setExternallyHeldFocus(held)
+    }
+
+    /**
+     * B561: 通知本 sink「当前是否有导航路线」。
+     *
+     * `default` 流上导航语音与 UI 咔哒声是**同一条流**，只能靠"有没有导航"
+     * 来区分 —— 没有路线时那条流上只有界面提示音，必须走系统声道，
+     * 否则打字声会从主驾导航喇叭出来（用户实测反馈）。
+     *
+     * host 在 iAP2 导航状态变化时调用；只改标记，**不重建**已建好的
+     * AudioTrack（重建会掐断正在播的提示音）。下次建流时生效。
+     */
+    fun setNavigationActive(active: Boolean) {
+        if (navigationActive == active) return
+        navigationActive = active
+        Log.i(SINK_TAG, "Audio: navigationActive=$active scope=$navigationVoiceScope")
+        onAudioDiagnostic("Audio: navigation active=$active")
+    }
+
+    /**
+     * B561: 运行时改 `default` 流的去向（设置页改了立即生效）。
+     *
+     * 与 [setNavigationActive] 一样只影响**之后**建立的 AudioTrack。
+     */
+    fun setNavigationVoiceScope(scope: NavigationVoiceScope) {
+        if (navigationVoiceScope == scope) return
+        navigationVoiceScope = scope
+        Log.i(SINK_TAG, "Audio: navigationVoiceScope=$scope")
+        onAudioDiagnostic("Audio: navigation voice scope=$scope")
     }
 
     private val screenStateLock = Any()
@@ -629,6 +766,9 @@ class AndroidMediaSink(
             navigationChannel,
             audioFocusCoordinator,
             navigationStreamType,
+            navigationVoiceScope,
+            navigationActive,
+            systemAudioRouting,
             mediaBufferMillis,
             onAudioDiagnostic,
             echoReference,
@@ -638,6 +778,9 @@ class AndroidMediaSink(
 
     private companion object {
         const val TELEPHONY_AUDIO_TYPE = "telephony"
+
+        /** sink 自身的日志 tag（与文件里其它 `Log.i("xcertplay-usb", …)` 一致）。 */
+        const val SINK_TAG = "xcertplay-usb"
     }
 }
 
@@ -1235,6 +1378,14 @@ private class AudioRenderer(
     private val navigationChannel: Int,
     private val audioFocusCoordinator: AudioFocusCoordinator,
     private val navigationStreamType: Int,
+    /**
+     * B561: 这三条一起决定 `default`/`alert`/`compatibility` 去哪个声道。
+     * 由 sink 建 renderer 时快照进来 —— renderer 活着的期间不跟着变，
+     * 换流才生效（换流＝iPhone 重开该音频流）。
+     */
+    private val navigationVoiceScope: NavigationVoiceScope,
+    private val navigationActive: Boolean,
+    private val systemAudioRouting: Boolean,
     private val mediaBufferMillis: Int,
     private val report: (String) -> Unit,
     /** Receives the played call audio so the call microphone can cancel its echo. */
@@ -1496,6 +1647,7 @@ private class AudioRenderer(
                 "channel=${selection.channel} usage=${usageFor(selection.channel)} " +
                 "contentType=${contentTypeFor(selection.contentType)} " +
                 "streamOverride=$streamOverride " +
+                "navScope=$navigationVoiceScope navActive=$navigationActive sysRouting=$systemAudioRouting " +
                 "focus=${if (audioFocusEnabled) "on" else "off"}",
         )
     }
@@ -1537,6 +1689,10 @@ private class AudioRenderer(
             audioType = format.audioType,
             payloadType = format.payloadType,
             mode = mode,
+            navigationStreamType = navigationStreamType,
+            navigationVoiceScope = navigationVoiceScope,
+            navigationActive = navigationActive,
+            systemAudioRouting = systemAudioRouting,
         )
     }
 
@@ -1549,10 +1705,15 @@ private class AudioRenderer(
     /**
      * Shares a sink-level focus request across all active non-navigation renderers.
      * Navigation guidance intentionally takes no focus: it overlays media without ducking it.
+     * B561: 系统提示音（[AudioChannel.SYSTEM]）同样不申请焦点。
      */
     private fun requestAudioFocus() {
         val channel = mappedChannel ?: return
         val attributes = trackAttributes ?: return
+        if (channel == AudioChannel.SYSTEM) {
+            Log.i(TAG, "audio focus skipped channel=SYSTEM; UI sonification overlays without ducking")
+            return
+        }
         if (channel == AudioChannel.NAVIGATION) {
             Log.i(TAG, "audio focus skipped channel=NAVIGATION; overlays without ducking")
             return
@@ -1576,12 +1737,7 @@ private class AudioRenderer(
         } else {
             AudioChannelMappingMode.MOBILE_COMPATIBLE
         }
-        return AudioChannelMapper.map(
-            audioType = format.audioType,
-            payloadType = format.payloadType,
-            mode = mode,
-            navigationStreamType = navigationStreamType,
-        ).streamType
+        return mappedSelection().streamType
     }
 
     private fun aacAudioSpecificConfig(): ByteArray {
@@ -1596,12 +1752,19 @@ private class AudioRenderer(
         AudioChannel.MEDIA -> AudioAttributes.USAGE_MEDIA
         AudioChannel.PHONE -> AudioAttributes.USAGE_VOICE_COMMUNICATION
         AudioChannel.ASSISTANT -> AudioAttributes.USAGE_ASSISTANT
-        AudioChannel.NAVIGATION -> AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE
+        // ★ B561 用 [NAVIGATION_USAGE_VENDOR_ROUTED]（=12）而不是
+        //   USAGE_ASSISTANCE_NAVIGATION_GUIDANCE（=11）—— 原因见该常量注释。
+        AudioChannel.NAVIGATION -> B561AudioConstants.NAVIGATION_USAGE_VENDOR_ROUTED
+        // B561: UI 提示音（打字/点击/锁屏咔哒声）。
+        //   绝不能是 12 —— 那是"只主驾发声"的导航声区，
+        //   提示音蹭上去就变成"打字声从导航喇叭出来"。
+        AudioChannel.SYSTEM -> AudioAttributes.USAGE_ASSISTANCE_SONIFICATION
     }
 
     private fun contentTypeFor(contentType: AudioContentType): Int = when (contentType) {
         AudioContentType.MUSIC -> AudioAttributes.CONTENT_TYPE_MUSIC
         AudioContentType.SPEECH -> AudioAttributes.CONTENT_TYPE_SPEECH
+        AudioContentType.SONIFICATION -> AudioAttributes.CONTENT_TYPE_SONIFICATION
     }
 
     /** Minimal OpusHead CSD for the mono 48 kHz stream CarPlay negotiates. */
@@ -1831,12 +1994,20 @@ private class AudioRenderer(
     private fun maintainPlaybackBuffer() {
         val track = track ?: return
         if (bufferProgress.shouldRebuffer(mappedChannel == AudioChannel.MEDIA, playbackStarted,
-                track.underrunCount > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition)) {
-            // The hardware buffer has actually drained. Pause without flushing or discarding PCM,
-            // then use the configured start threshold again when music resumes.
+                track.underrunCount > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition,
+                startThresholdBytes / 2L)) {
+            // The hardware buffer has starved below the recovery floor. Pause without flushing
+            // or discarding PCM, then use the configured start threshold again when music resumes.
             track.pause()
             playbackStarted = false
-            prebufferBytes = 0
+            // ★ B561: 暂停会保留已排队的 PCM。把它们计入重启阈值，
+            //   否则下面那次 blocking write 会在我们调用 play() 之前
+            //   把暂停的 track 灌满 —— 起来就是 underrun，然后无限循环。
+            //   上限夹到 start 阈值：超过这个量的 PCM 说明队列已经满溢，
+            //   按完整阈值重来是正确行为。
+            prebufferBytes = bufferProgress.queuedBytes(track.playbackHeadPosition)
+                .coerceAtMost(startThresholdBytes.toLong()).toInt()
+            lastPcmWriteNs = System.nanoTime()
             rebufferCount++
         }
         // A short final burst may never reach the start threshold. Play it after a bounded wait.
@@ -1978,5 +2149,6 @@ private class AudioRenderer(
         const val STATS_TAG = "DiPlay-AudioStats"
         const val STATS_WINDOW_NS = 5_000_000_000L
         const val DECODED_BUFFER_LOG_INTERVAL = 50
+
     }
 }

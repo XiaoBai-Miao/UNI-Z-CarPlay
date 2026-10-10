@@ -631,4 +631,13 @@
     <string name="settings_interface_size">حجم الواجهة</string>
     <string name="settings_interface_size_auto">تلقائي</string>
     <string name="settings_interface_size_hint">حجم النص وعناصر التحكم في شاشات DiPlay. يكبّرها الوضع التلقائي على الشاشات الكبيرة منخفضة الكثافة. لا يتأثر CarPlay.</string>
+    <string name="settings_nav_voice_scope">منطقة صوت الملاحة</string>
+    <string name="settings_nav_voice_scope_guidance_only">للسائق فقط أثناء الملاحة</string>
+    <string name="settings_nav_voice_scope_always">للسائق فقط دائمًا</string>
+    <string name="settings_nav_voice_scope_off">كل مكبرات الصوت</string>
+    <string name="settings_nav_voice_scope_description">يرسل CarPlay صوت الملاحة وأصوات واجهة الهاتف على البث الصوتي نفسه. مع اختيار «للسائق فقط أثناء الملاحة» يتبع البث مكبر الملاحة فقط أثناء وجود مسار، فتسمع نقرات لوحة المفاتيح في كل المقاعد. يسري بعد إعادة الاتصال.</string>
+    <string name="settings_system_audio_routing">أصوات واجهة الهاتف إلى كل المكبرات</string>
+    <string name="settings_system_audio_routing_description">تشغّل أصوات النظام ولوحة المفاتيح في CarPlay عبر المكبرات العادية بدل منطقة مكبر الملاحة، ولا توقف الموسيقى لأجلها. أوقف هذا الخيار للمقارنة بالسلوك السابق. يسري بعد إعادة الاتصال.</string>
+    <string name="cluster_junction_card">عرض التقاطع</string>
+    <string name="cluster_junction_card_description">يرسم التقاطع القادم والمسار الموصى به من الهندسة التي يرسلها الهاتف. لا يرسل CarPlay أي صورة، لذا يرسمها DiPlay كما تفعل لوحة العدادات الأصلية. يبقى مخفيًا حتى يرسل الهاتف بيانات المسارات.</string>
 </resources>

@@ -40,11 +40,47 @@ internal class ClusterMapPresentation(
     display: Display,
     private val theme: DiLink51ClusterLayout.Theme = DiLink51ClusterLayout.theme(context),
     private val onSurface: (Surface?) -> Unit,
+    /**
+     * B561: 建 presentation 时的深色状态。
+     *
+     * 默认值仍是比亚迪那套 [DiLink51ClusterLayout.dark]，但**比亚迪以外的车机
+     * 永远走不到它** —— 那个判据是"对比度设置 == DARK 或主题 == SIMPLE"，
+     * B561 上既没这个设置、主题恒为 SCENARIO，于是 `dark` 永远是 false，
+     * 等待页就永远是浅底深字（实测：深色模式下仪表上一片惨白的"等待 CarPlay"）。
+     *
+     * 所以调用方（CarPlayHostActivity）必须把**它自己的** darkMode 传进来。
+     */
+    initialNight: Boolean = DiLink51ClusterLayout.dark(context, theme),
 ) : Presentation(context, display) {
     private var waitingLabel: TextView? = null
     private var turnCardView: ClusterTurnCardView? = null
+
+    /** B561: 媒体信息卡 / 通话卡。默认 GONE，有数据才显示（见各自 setXxx）。 */
+    private var mediaCardView: ClusterMediaCardView? = null
+    private var callCardView: ClusterCallCardView? = null
+
+    /** B561: 路口放大图（车道级导航图）。默认 GONE，见 [setJunctionLanes]。 */
+    private var junctionCardView: ClusterJunctionCardView? = null
     private var videoView: View? = null
     private var streamActive = false
+
+    /** 深色状态。等待页、底衬都要跟着变，所以不能只在 onCreate 里算一次。 */
+    private var night = initialNight
+    private var rootView: FrameLayout? = null
+    private var contrastView: InstrumentContrastView? = null
+    /** 底衬色随夜色变；单独记一份，供运行时切换重画。 */
+    private var backdropColor = if (initialNight) DARK_BACKDROP else LIGHT_BACKDROP
+    /** 浅色主题下的那块纯色底（无 plan 的旧固件路径用）。 */
+    private var flatBackground = if (initialNight) DARK_FLAT_BACKGROUND else LIGHT_FLAT_BACKGROUND
+    /**
+     * 等待页要不要自带一块不透明底色。
+     *
+     * 只有**没有 plan** 的旧固件路径需要 —— 那条路走 SurfaceView，
+     * 首个 surface 到达前它是一块黑面，必须用不透明底色盖住；
+     * 有 plan 时（TextureView + 透明窗口）底色由 root/对比层负责。
+     */
+    private var flatPlaceholder = false
+
     var outputSurface: Surface? = null
         private set
     var mapVisible = true
@@ -55,11 +91,15 @@ internal class ClusterMapPresentation(
         val size = sizeOf(display)
         val adaptive = DiLink51ClusterLayout.supported()
         val plan = if (adaptive) DiLink51ClusterLayout.plan(size.x, size.y, theme) else null
-        val dark = DiLink51ClusterLayout.dark(context, theme)
-        val backdrop = if (dark) Color.rgb(15, 22, 30) else Color.rgb(207, 218, 229)
+        val dark = night
+        backdropColor = if (dark) DARK_BACKDROP else LIGHT_BACKDROP
+        flatBackground = if (dark) DARK_FLAT_BACKGROUND else LIGHT_FLAT_BACKGROUND
         val root = FrameLayout(context).apply {
-            setBackgroundColor(if (plan == null) Color.rgb(233, 238, 246) else if (plan.fullMap) backdrop else Color.TRANSPARENT)
+            setBackgroundColor(flatOrBackdrop(plan))
         }
+        rootView = root
+        activePlan = plan
+        flatPlaceholder = plan == null
         if (plan != null) {
             window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
@@ -94,7 +134,11 @@ internal class ClusterMapPresentation(
             }
             root.addView(textureView, videoParams)
             videoView = textureView
-            if (plan.fullMap) root.addView(InstrumentContrastView(context, plan, backdrop), FrameLayout.LayoutParams(-1, -1))
+            if (plan.fullMap) {
+                val contrast = InstrumentContrastView(context, plan, backdropColor)
+                contrastView = contrast
+                root.addView(contrast, FrameLayout.LayoutParams(-1, -1))
+            }
             Log.i(TAG, "layout=$theme viewport=$plan source=${plan.sourceLeft},${plan.sourceTop} dark=$dark")
         } else {
             // Preserve the original PR renderer for DiLink 5 and unverified firmware.
@@ -120,16 +164,35 @@ internal class ClusterMapPresentation(
             root.addView(surfaceView, videoParams)
             videoView = surfaceView
         }
+        // ★ 先建对象、赋给字段，**再**上色。
+        //   `waitingLabel = TextView(...).apply { applyWaitingPalette() }` 里
+        //   字段此刻还是 null（赋值要等 apply 结束），于是配色被静默跳过 ——
+        //   表现就是"改了深色模式，等待页仍是白底"。
+        //   这个坑踩过一次：单测直接断言 currentTextColor 才暴露出来。
         waitingLabel = TextView(context).apply {
             text = context.getString(R.string.cluster_waiting_for_map)
-            setTextColor(if (plan != null && dark) Color.WHITE else Color.DKGRAY)
-            if (plan == null) setBackgroundColor(Color.rgb(233, 238, 246))
             textSize = 26f
             gravity = Gravity.CENTER
         }
+        applyWaitingPalette(dark)
         root.addView(waitingLabel, FrameLayout.LayoutParams(videoParams))
         turnCardView = ClusterTurnCardView(context).apply { visibility = View.GONE }
         root.addView(turnCardView, FrameLayout.LayoutParams(-1, -1))
+        // ★ 媒体卡与通话卡（B561）。挂载方式与转向卡一致：整屏MATCH_PARENT + GONE，
+        //   几何由各自 View 内部的 ClusterTurnCardOverlay.card() 算 ——
+        //   所以设置里的「水平 / 垂直 / 大小 / 透明度」滑块对三种卡统一生效，
+        //   不需要为每种卡各做一套设置项。
+        //   addView 顺序即叠放次序：后加的盖在上面。
+        mediaCardView = ClusterMediaCardView(context).apply { visibility = View.GONE }
+        root.addView(mediaCardView, FrameLayout.LayoutParams(-1, -1))
+        // ★ B561 路口放大图（车道级导航图）。iOS 不发成品图，只发 0x5202 的路口
+        //   几何与 0x5204 的车道数据，由这里自己渲染 —— 详见
+        //   [ClusterJunctionCardView] 顶部的说明。挂在三张卡**之上**：
+        //   它就是转向信息的展开态，出现时应该在最上层。
+        junctionCardView = ClusterJunctionCardView(context).apply { visibility = View.GONE }
+        root.addView(junctionCardView, FrameLayout.LayoutParams(-1, -1))
+        callCardView = ClusterCallCardView(context).apply { visibility = View.GONE }
+        root.addView(callCardView, FrameLayout.LayoutParams(-1, -1))
         // Start with the placeholder visible; SurfaceView would otherwise cover the light
         // backdrop with an empty black surface before the first stream notification.
         // SurfaceView ignores fractional alpha before API 34. Keep its decoder surface
@@ -141,6 +204,43 @@ internal class ClusterMapPresentation(
         }
         setContentView(root)
     }
+
+    /** root 底色：没有 plan 的旧固件用整屏纯色，有 plan 且全屏地图时用带渐变的底衬。 */
+    private fun flatOrBackdrop(plan: DiLink51ClusterLayout.Plan?): Int =
+        if (plan == null) flatBackground else if (plan.fullMap) backdropColor else Color.TRANSPARENT
+
+    /**
+     * B561: 等待页配色跟随夜色。
+     *
+     * 深色 → 黑底白字；浅色 → 保持上游那套浅底深字。
+     * 单独抽出来是因为它既要用于建 presentation，也用于运行时切夜色。
+     */
+    private fun applyWaitingPalette(dark: Boolean) {
+        val label = waitingLabel ?: return
+        label.setTextColor(if (dark) Color.WHITE else Color.DKGRAY)
+        if (flatPlaceholder) label.setBackgroundColor(flatBackground)
+    }
+
+    /**
+     * B561: 运行时切深浅色。等待页与底衬都要跟着重画 —— 否则车机夜间模式下
+     * 仪表上会一直留着那块浅底"等待 CarPlay"（实测反馈）。
+     *
+     * 幂等：同值直接返回，避免反复 invalidate。
+     */
+    fun setNightMode(dark: Boolean) {
+        if (dark == night) return
+        night = dark
+        backdropColor = if (dark) DARK_BACKDROP else LIGHT_BACKDROP
+        flatBackground = if (dark) DARK_FLAT_BACKGROUND else LIGHT_FLAT_BACKGROUND
+        applyWaitingPalette(dark)
+        contrastView?.setBackdropColor(backdropColor)
+        // plan 只在 onCreate 里算过；这里按当前底色规则重设 root，
+        // 保证"全屏地图 + 深色"和"旧固件纯色底"两条路都换到新底色。
+        rootView?.setBackgroundColor(flatOrBackdrop(activePlan))
+    }
+
+    /** onCreate 算出的几何；null = 旧固件纯色底路径。 */
+    private var activePlan: DiLink51ClusterLayout.Plan? = null
 
     /**
      * Cross-fades the waiting placeholder over the live map. TextureView can also fade the
@@ -188,11 +288,184 @@ internal class ClusterMapPresentation(
         turnCardView?.setGuidance(guidance)
     }
 
+    /**
+     * B561: 媒体信息卡。[artwork] 为 null 就画纯文字卡。
+     *
+     * 位置/大小/透明度**独立于转向卡**（见 [setCardGeometry]）—— 原先三张卡共用
+     * 转向卡那一份滑块，结果媒体卡与转向卡永远重叠、无法分开摆。
+     *
+     * ★ v69: [album] 是第三行（专辑名，iAP2 MediaItemAttributes 字段 6）。
+     */
+    fun setMediaCard(
+        title: String?,
+        artist: String?,
+        album: String?,
+        playing: Boolean,
+        artwork: android.graphics.Bitmap? = null,
+    ) {
+        mediaCardView?.apply {
+            setMedia(title, artist, album, playing)
+            setArtwork(artwork)
+        }
+    }
+
+    /** B561: 通话卡。[elapsedSeconds] 由调用方按秒推进。 */
+    fun setCallCard(
+        call: com.shilapi.xcertplay.hud.CarPlayCallCard?,
+        elapsedSeconds: Long = 0L,
+    ) {
+        callCardView?.setCall(call, elapsedSeconds)
+    }
+
+    /** B561: 媒体卡是否画封面。关闭则只显示歌名/歌手两行。 */
+    fun setMediaCardArtworkEnabled(enabled: Boolean) {
+        mediaCardView?.setArtworkEnabled(enabled)
+    }
+
+    /** B561: 只调媒体卡文字大小（60..180，100 = 原始规格）。 */
+    fun setMediaCardTextScalePercent(percent: Int) {
+        mediaCardView?.setTextScalePercent(percent)
+    }
+
+    /** B561: 媒体卡歌名/歌手超宽时循环滚动。 */
+    fun setMediaCardScrollText(enabled: Boolean) {
+        mediaCardView?.setScrollText(enabled)
+    }
+
+    /**
+     * B561: 媒体卡的宽/高与排放方向。
+     *
+     * 与 `setCardGeometry` 分开 —— 那套是三卡共用的 x/y/size（等比缩放），
+     * 这里只影响媒体卡的形状。
+     */
+    fun setMediaCardShape(
+        widthPercent: Int,
+        heightPercent: Int,
+        orientation: com.shilapi.xcertplay.airplay.ClusterTurnCardOverlay.CardOrientation,
+    ) {
+        mediaCardView?.setMediaShape(widthPercent, heightPercent, orientation)
+    }
+
+    /**
+     * 三张卡**各自独立**的几何。
+     *
+     * ★ 不要再合并成"一次性下发到三种卡" —— 那样它们会永远重叠在同一位置，
+     *   用户没法把媒体卡摆在转向卡旁边。这是踩过的坑。
+     */
+    fun setCardGeometry(
+        turn: Triple<Int, Int, Int>,
+        media: Triple<Int, Int, Int>,
+        call: Triple<Int, Int, Int>,
+    ) {
+        turnCardView?.setLayout(turn.first, turn.second, turn.third)
+        mediaCardView?.setLayout(media.first, media.second, media.third)
+        callCardView?.setLayout(call.first, call.second, call.third)
+    }
+
+    /**
+     * B561: 路口放大图的位置/大小/透明度 —— 独立于转向卡。
+     *
+     * 用 [ClusterTurnCardOverlay.junctionCard] 那份更方的几何，所以**不能**
+     * 复用 [setCardGeometry] 的横幅比例。
+     */
+    fun setJunctionGeometry(xPercent: Int, yPercent: Int, sizePercent: Int) {
+        junctionCardView?.setLayout(xPercent, yPercent, sizePercent)
+    }
+
+    fun setJunctionOpacity(percent: Int) {
+        junctionCardView?.setOpacity(percent)
+    }
+
+    /** B561: 推车道数据。null / 不可画时整块隐藏。 */
+    fun setJunctionLanes(lanes: com.shilapi.xcertplay.hud.ClusterLaneGuidance?) {
+        junctionCardView?.setLane(lanes)
+    }
+
+    fun setCardOpacity(turnPercent: Int, mediaPercent: Int, callPercent: Int) {
+        turnCardView?.setOpacity(turnPercent)
+        mediaCardView?.setOpacity(mediaPercent)
+        callCardView?.setOpacity(callPercent)
+    }
+
+    fun setClusterCardNightMode(night: Boolean) {
+        turnCardView?.setNightMode(night)
+        mediaCardView?.setNightMode(night)
+        callCardView?.setNightMode(night)
+        junctionCardView?.setNightMode(night)
+    }
+
     companion object {
         const val TAG = "DiPlay-Cluster"
 
-        /** Keep the 5/5.1 selection order, then try the measured DiLink 4 projection display. */
+        /** 深色底衬（全屏地图路径的渐变底色）。 */
+        private val DARK_BACKDROP = Color.rgb(15, 22, 30)
+
+        /** 浅色底衬 —— 与上游 0.2.14 一致，别改。 */
+        private val LIGHT_BACKDROP = Color.rgb(207, 218, 229)
+
+        /**
+         * 无 plan（旧固件 / B561）时等待页与 root 共用的不透明底色。
+         *
+         * 深色版取近黑（不是纯 0，避免与仪表自身黑底边界糊在一起）。
+         */
+        private val DARK_FLAT_BACKGROUND = Color.rgb(10, 12, 16)
+
+        /** 上游原始浅色底色，`ClusterMapPresentationTest` 断言的就是它。 */
+        private val LIGHT_FLAT_BACKGROUND = Color.rgb(233, 238, 246)
+
+        /**
+         * 找出仪表屏。
+         *
+         * ## B561 优先用用户选定的屏（0.2.14 缺的那一环）
+         *
+         * 原实现只认比亚迪：`DISPLAY_CATEGORY_PRESENTATION` 取屏 →
+         * `DiLink51ClusterLayout.displayName()` 按屏名/指纹 → fallback 到
+         * `DiLink4ClusterDisplay.accepts()`（要求 `name == "DiLink4"` 且 1920×720）。
+         *
+         * B561 的仪表是 **HDMI 外接副屏**，`DISPLAY_CATEGORY_PRESENTATION`
+         * 恰好**不包含**这类屏；而屏名/尺寸也匹配不上任何比亚迪指纹 ——
+         * 于是 `findDisplay()` 恒返回 null，`ClusterMapPresentation` 从不创建，
+         * 表现为「连接成功但仪表无画面」，且**日志里连异常都没有**
+         * （调用点写的是 `clusterPresentation?.setStreamActive(...)`，null 静默跳过）。
+         *
+         * 所以顺序改成：**先问用户在设置页选定的屏**（`ClusterDisplayCatalog`
+         * 会枚举除主屏外的所有可用屏并记住用户选择），没有再走比亚迪指纹。
+         * 这也让设置页里的选屏真正生效 —— 之前它只影响 UI，对投屏链路不起作用。
+         */
         fun findDisplay(context: Context, theme: DiLink51ClusterLayout.Theme = DiLink51ClusterLayout.theme(context)): Display? {
+            // 1) B561 的副屏投图。判据要**无歧义**才认：
+            //    - 用户显式选过（selectedId != -1）→ 用他选的那块；
+            //    - 只枚举到**一块**副屏 → 没得选，直接用（车机常态：仪表是唯一外接屏）；
+            //    - 有多块却没选 → 落到下面的比亚迪指纹，绝不"挑最大的那块"硬上。
+            //
+            //    ★ 为什么不能无条件 `ClusterDisplayCatalog.resolve()`：
+            //    autoFollow 默认 true，它会回落到"第一个候选（分辨率最大）"，
+            //    于是 "Passenger display" 960×360、乃至 1280×720 的屏都会被当成
+            //    仪表屏（ClusterMapPresentationTest 的 unrelatedPresentationDisplay /
+            //    dilink4WrongGeometry / dilink4RequiresPresentationFlag 三条都因此红）。
+            //    认错屏会把导航画到 passenger display 上，比不画更糟 —— 宁缺勿画。
+            val catalog = com.shilapi.xcertplay.cluster.ClusterDisplayCatalog
+            val chosen = catalog.selectedId(context)
+            val candidates = catalog.candidates(context)
+            // ★ 只对**非比亚迪**的副屏走这条 —— 屏名属于 DiLink/DiPlay 体系时
+            //   一律交回下面的指纹逻辑。那几条契约（错尺寸要拒绝、缺
+            //   FLAG_PRESENTATION 要拒绝、5.1 要优先于 4.0）不能被B561 分支绕过，
+            //   否则就是在比亚迪车上乱认屏。
+            val bydNamed = candidates.filter { looksLikeByd(it.name) }
+            val foreign = candidates.filterNot { looksLikeByd(it.name) }
+            if (chosen != -1) {
+                catalog.resolve(context)?.let { return it }
+            } else if (foreign.size == 1 && bydNamed.isEmpty()) {
+                // 唯一一块**非比亚迪**副屏 = 无歧义（B561 常态：仪表是唯一外接屏）。
+                // 仍要过 STATE_OFF 与 name 双重校验 —— 枚举与取用之间屏可能已拔掉。
+                val picked = foreign.first()
+                context.getSystemService(DisplayManager::class.java)
+                    ?.getDisplay(picked.displayId)
+                    ?.takeIf { it.name == picked.name && it.state != android.view.Display.STATE_OFF }
+                    ?.let { return it }
+            }
+
+            // 2) 比亚迪原逻辑保留为fallback。
             val displays = context.getSystemService(DisplayManager::class.java)
                 ?.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION) ?: return null
             val name = DiLink51ClusterLayout.displayName(
@@ -212,6 +485,19 @@ internal class ClusterMapPresentation(
                     DiLink51ClusterLayout.plan(size.x, size.y, theme) != null
                 }
             }
+        }
+
+        /**
+         * 屏名看起来是否属于比亚迪 / DiLink 体系。
+         *
+         * 命中的一律交回上游的指纹逻辑处理，B561 的"单块外接屏即采用"不介入 ——
+         * 上游那几条契约（错尺寸拒绝、缺 FLAG_PRESENTATION 拒绝、5.1 优先）
+         * 正是为了避免在比亚迪车上认错屏，不能被绕过。
+         */
+        private fun looksLikeByd(name: String): Boolean {
+            val lower = name.lowercase()
+            return lower.contains("dilink") || lower.contains("byd") ||
+                lower.contains("fission") || DiLink4ClusterDisplay.NAME.equals(name, ignoreCase = true)
         }
 
         fun describeDisplays(context: Context): String =
@@ -243,9 +529,21 @@ internal class ClusterMapPresentation(
 private class InstrumentContrastView(
     context: Context,
     private val plan: DiLink51ClusterLayout.Plan,
-    private val background: Int,
+    private var background: Int,
 ) : View(context) {
     private val paint = Paint()
+
+    /**
+     * B561: 运行时切深浅色要重画渐变，底色是构造时给的，不能是 val。
+     *
+     * 刻意不叫 `setBackground` —— 那会与 `View.setBackground(Drawable)` 撞名。
+     */
+    fun setBackdropColor(color: Int) {
+        if (background == color) return
+        background = color
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val left = plan.left.toFloat(); val top = plan.top.toFloat()

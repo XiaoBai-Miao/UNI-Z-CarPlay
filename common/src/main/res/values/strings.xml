@@ -728,4 +728,56 @@
     <string name="settings_interface_size">Interface size</string>
     <string name="settings_interface_size_auto">Automatic</string>
     <string name="settings_interface_size_hint">Size of text and controls on DiPlay\'s own screens. Automatic enlarges them on large screens with a low density. CarPlay is not affected.</string>
+    <string name="cluster_media_card">Media card</string>
+    <string name="cluster_media_card_description">Show the song title, artist and album as a card on the instrument cluster. The card has its own position and size sliders.</string>
+    <string name="cluster_call_card">Call card</string>
+    <string name="cluster_call_card_description">Show the caller and call duration on the instrument cluster. Kept on by default because a call is safety information.</string>
+    <string name="cluster_card_preview_hint">Preview at the instrument panel\'s real proportions. Every card has its own sliders, so drag one card without moving the others.</string>
+    <string name="cluster_media_card_artwork">Show artwork</string>
+    <string name="cluster_media_card_artwork_description">Draw the album cover on the media card. Turn off for a text-only card, which is easier to read on the small cluster panel.</string>
+    <string name="cluster_card_size">Size</string>
+    <string name="cluster_card_opacity">Opacity</string>
+    <string name="cluster_card_horizontal">Horizontal</string>
+    <string name="cluster_card_vertical">Vertical</string>
+    <string name="cluster_display">Instrument cluster</string>
+    <string name="cluster_display_description">Show the CarPlay map on the instrument cluster, and place the turn, media and call cards on it.</string>
+    <string name="b561_vehicle_status">Vehicle data to phone</string>
+    <string name="b561_vehicle_status_description">Show battery and range on the phone\'s CarPlay map. Read from the vehicle VHAL; nothing is shown when unavailable.</string>
+    <string name="b561_vehicle_status_sources">%1$s | %2$s</string>
+    <string name="b561_vehicle_status_sources_idle">Sources idle (no live provider)</string>
+    <string name="b561_vehicle_status_monitor">Live reading</string>
+    <string name="b561_vehicle_status_unavailable">Vehicle VHAL not ready</string>
+    <string name="b561_vehicle_status_off">Off; nothing is sent to the phone</string>
+    <string name="b561_vehicle_status_value">Battery %1$d%% \u00b7 range %2$d km \u00b7 speed %3$s km/h \u00b7 gear %4$s</string>
+    <string name="b561_vehicle_status_partial">Read: %1$s</string>
+    <string name="cluster_media_text_scale">Text size</string>
+    <string name="cluster_media_text_scale_option">Text size %1$d%%</string>
+    <string name="cluster_media_scroll_text">Scroll long titles</string>
+    <string name="cluster_media_scroll_text_description">Song title, artist and album each get one line. A line that is still too long scrolls sideways instead of being cut off.</string>
+    <string name="cluster_media_orientation">Layout</string>
+    <string name="cluster_media_orientation_banner">Banner — artwork left, text right</string>
+    <string name="cluster_media_orientation_vertical">Portrait 1:1.35 — artwork on top</string>
+    <string name="cluster_media_orientation_free">Free — switches by aspect ratio</string>
+    <string name="cluster_media_width">Card width</string>
+    <string name="cluster_media_width_option">Card width %1$d%%</string>
+    <string name="cluster_media_height">Card height</string>
+    <string name="cluster_media_height_option">Card height %1$d%%</string>
+    <string name="settings_nav_voice_scope">Navigation voice zone</string>
+    <string name="settings_nav_voice_scope_guidance_only">Driver only while navigating</string>
+    <string name="settings_nav_voice_scope_always">Driver only always</string>
+    <string name="settings_nav_voice_scope_off">All speakers</string>
+    <string name="settings_nav_voice_scope_description">CarPlay sends navigation voice and phone UI sounds on the same audio stream. With this set to driver-only-while-navigating, the stream follows the navigation speaker only while a route is running, so typing beeps are heard everywhere. Takes effect after reconnecting.</string>
+    <string name="settings_system_audio_routing">Phone UI sounds to all speakers</string>
+    <string name="settings_system_audio_routing_description">Plays CarPlay system and keyboard sounds over normal speakers instead of the navigation speaker zone, and never pauses music for them. Turn this off to compare against the previous behaviour. Takes effect after reconnecting.</string>
+    <string name="cluster_junction_card">Junction view</string>
+    <string name="cluster_junction_card_description">Draws the upcoming junction and the recommended lane from the geometry the iPhone sends. CarPlay never sends a picture, so DiPlay renders it the way the factory cluster does. It stays hidden until the phone sends lane data.</string>
+    <!-- ★ v69: 卡片宽高的百分比基数改成「屏幕高度」，文案同步说明，
+         否则用户按「大小 50%」去量高度会觉得对不上。 -->
+    <string name="cluster_media_size_base_hint">Card width and height are percentages of the instrument panel\'s HEIGHT. On the wide 1920x720 panel a size of 50% already spans a quarter of the screen.</string>
+    <!-- ★ v69: 双指下滑菜单新增的「常用设置」分区（免重连项，按类分组）。 -->
+    <string name="quick_settings">Quick settings</string>
+    <string name="quick_group_display">Display</string>
+    <string name="quick_no_reconnect_hint">Takes effect immediately; no reconnect needed.</string>
+    <string name="quick_cluster_map_hint">Shows the phone\'s map on the instrument cluster. Takes effect immediately.</string>
+    <string name="quick_settings_footer">These are copies of the app settings, not moved copies — the same values are shared by both screens, and everything here applies without reconnecting.</string>
 </resources>

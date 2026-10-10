@@ -65,7 +65,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 internal enum class SettingsCategory {
-    OVERVIEW, CONNECTION, DISPLAY, AUDIO, NAVIGATION, VEHICLE, DIAGNOSTICS, ADVANCED,
+    OVERVIEW, CONNECTION, DISPLAY, AUDIO, NAVIGATION, VEHICLE, CLUSTER, DIAGNOSTICS, ADVANCED,
 }
 
 /** A settings card. Every entry needs one category in [SettingsInformationArchitecture]; see AGENTS.md. */
@@ -100,7 +100,16 @@ internal object SettingsInformationArchitecture {
         ),
         SettingsCategory.DISPLAY to setOf(SettingsSection.DISPLAY_AND_PERFORMANCE),
         SettingsCategory.AUDIO to setOf(SettingsSection.AUDIO_ROUTING),
-        SettingsCategory.NAVIGATION to setOf(SettingsSection.LOCATION, SettingsSection.BYD_NAVIGATION),
+        SettingsCategory.NAVIGATION to setOf(
+            SettingsSection.LOCATION,
+            SettingsSection.BYD_NAVIGATION,
+        ),
+        // ★ 仪表屏分区独立成一级分类（用户要求）。
+        // 从导航里挪出来：投图本身属于导航，但**卡片位置/大小/开关**是独立的
+        // 仪表配置，混在导航里会让「导航」这一页变得又长又杂。
+        SettingsCategory.CLUSTER to setOf(
+            SettingsSection.CLUSTER_MAP,
+        ),
         SettingsCategory.VEHICLE to setOf(
             SettingsSection.CARPLAY_CONTROLS,
             SettingsSection.WHEEL_KEYS,
@@ -108,7 +117,7 @@ internal object SettingsInformationArchitecture {
         ),
         SettingsCategory.DIAGNOSTICS to setOf(SettingsSection.DIAGNOSTICS),
         SettingsCategory.ADVANCED to setOf(
-            SettingsSection.CLUSTER_MAP,
+            // CLUSTER_MAP 已移到 NAVIGATION —— 仪表分区不再是"高级"。
             SettingsSection.EXPERIMENTAL_DISPLAY,
             SettingsSection.ADVANCED_MEDIA,
         ),
@@ -273,11 +282,12 @@ class DiPlayActivity : ComponentActivity() {
         com.shilapi.xcertplay.hud.BydNavigationOutputs.onAppOpened(applicationContext)
         WheelKeyService.restoreIfNeeded(this)
         WindowCompat.setDecorFitsSystemWindows(window, true)
-        window.statusBarColor = BG; window.navigationBarColor = BG
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            isAppearanceLightStatusBars = false
-            hide(WindowInsetsCompat.Type.statusBars())
-        }
+        // ★ 状态栏不再隐藏，改为按昼夜反色（白天白底深图标 / 夜间黑底浅图标）。
+        //   原来这里 hide(statusBars()) + 固定 BG 色 + isAppearanceLightStatusBars=false，
+        //   意味着状态栏一旦被用户下拉露出就是"深色图标配深色底"，看不清。
+        //   昼夜不跟随系统 uiMode —— 车机常年报 UI_MODE_NIGHT_UNDEFINED，
+        //   跟系统等于永远不切；这里用 CarPlay 自己的夜间判定。
+        applySystemBars()
         setupError = runCatching { DiPlayBootstrap.ensure(this, AirPlayPersistence.loadMfiTarget(this)) }.exceptionOrNull()?.let {
             android.util.Log.e("DiPlaySetup", "CarPlay authentication could not be loaded", it)
             getString(R.string.setup_error_auth)
@@ -324,6 +334,8 @@ class DiPlayActivity : ComponentActivity() {
     }
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        // 系统的昼夜可能变了，状态栏配色要跟上（在 render 之前刷，避免闪一下旧色）。
+        applySystemBars()
         if (updateInterfaceSize(newConfig)) return
         render()
     }
@@ -439,6 +451,10 @@ class DiPlayActivity : ComponentActivity() {
 
     private fun render() {
         enforceInterfaceSize()
+        // ★ v69: 旧的仪表卡预览 View 随整棵视图树一起被丢弃 ——
+        //   必须先把字段置 null，否则 ensureClusterPreview 会把**已经挂在旧树上**
+        //   的 View 再挂到新树上，Android 会抛「specified child already has a parent」。
+        clusterPreview = null
         // A pending assignment belongs to the widgets being replaced, never to another page.
         cancelKeyLearning()
         // A restore still waiting for layout keeps its target: the old page was never laid out.
@@ -763,6 +779,7 @@ class DiPlayActivity : ComponentActivity() {
         SettingsCategory.DISPLAY -> R.drawable.ic_dp_display
         SettingsCategory.AUDIO -> R.drawable.ic_dp_audio
         SettingsCategory.NAVIGATION -> R.drawable.ic_dp_navigation
+        SettingsCategory.CLUSTER -> R.drawable.ic_dp_dashboard
         SettingsCategory.VEHICLE -> R.drawable.ic_dp_vehicle
         SettingsCategory.DIAGNOSTICS -> R.drawable.ic_dp_diagnostics
         SettingsCategory.ADVANCED -> R.drawable.ic_dp_advanced
@@ -774,6 +791,7 @@ class DiPlayActivity : ComponentActivity() {
         SettingsCategory.DISPLAY -> R.string.settings_display
         SettingsCategory.AUDIO -> R.string.audio
         SettingsCategory.NAVIGATION -> R.string.settings_navigation
+        SettingsCategory.CLUSTER -> R.string.cluster_display
         SettingsCategory.VEHICLE -> R.string.settings_vehicle
         SettingsCategory.DIAGNOSTICS -> R.string.diagnostics
         SettingsCategory.ADVANCED -> R.string.settings_advanced
@@ -787,6 +805,7 @@ class DiPlayActivity : ComponentActivity() {
             SettingsCategory.AUDIO -> audioSettings(content)
             SettingsCategory.NAVIGATION -> navigationSettings(content)
             SettingsCategory.VEHICLE -> vehicleSettings(content)
+            SettingsCategory.CLUSTER -> clusterSettings(content)
             SettingsCategory.DIAGNOSTICS -> diagnosticsSettings(content)
             SettingsCategory.ADVANCED -> advancedSettings(content)
         }
@@ -996,6 +1015,234 @@ class DiPlayActivity : ComponentActivity() {
         renderSections(content, SettingsInformationArchitecture.sectionsByCategory.getValue(SettingsCategory.DISPLAY))
     }
 
+        /**
+     * 按昼夜给状态栏/导航栏上色：白天白底深图标，夜间黑底浅图标。
+     *
+     * 判据优先级（与设置页里「CarPlay 昼夜」那组选项一致）：
+     * 1. 用户选死DAY / NIGHT → 照办；
+     * 2. SYSTEM → 读系统 `uiMode`，但**读到 UNDEFINED 就保持上一次**
+     *    （车机常年报 UNDEFINED，直接跟随等于永远不切）；
+     * 3. AMBIENT / SCHEDULE → 这里拿不到车机光线传感器，退回系统 uiMode。
+     */
+    private fun applySystemBars() {
+        val configured = AirPlayPersistence.loadCarPlayNightMode(this)
+        val night = when (configured) {
+            CarPlayNightMode.DAY -> false
+            CarPlayNightMode.NIGHT -> true
+            else -> nightModeOrNull(resources.configuration.uiMode)
+                ?: lastKnownNight
+        }
+        if (night != lastKnownNight) lastKnownNight = night
+        SystemBars.apply(this, night)
+    }
+
+    /**
+     * 上一次判定出的昼夜。
+     *
+     * 车机把 `uiMode` 报成 `UI_MODE_NIGHT_UNDEFINED` 时，
+     * 用它兜住而不是每帧都回落成白天 —— 否则状态栏会在不明状态下来回跳。
+     */
+    private var lastKnownNight = false
+
+    /**
+     * ★ v69: 仪表卡片位置预览。
+     *
+     * 原本它是 `CLUSTER_MAP` 分区闭包里的局部 `val`，而 v69 按用户要求把
+     * **媒体卡设置搬去了「音频 → 音频路由」分区** —— 分区是两个独立闭包，
+     * 局部变量互相看不见，媒体卡的滑块就找不到预览可刷。
+     * 所以这里提升成成员：谁建、谁刷都行。
+     */
+    /**
+     * ★ v69: 仪表**媒体卡**的设置组。
+     *
+     * 用户要求「把媒体卡片的相关设置改到音频中」—— 媒体卡本质是
+     * 播放器的一部分，跟着音频走比塞在仪表屏设置里更符合预期。
+     * 抽成方法而不是内联在分区闭包里：这段有 109 行，内联会把
+     * 「音频路由」分区撑到没法读，而且没法单独测试/复用。
+     */
+    private fun clusterMediaCardControls(card: LinearLayout) {
+        // B561: 媒体卡 / 通话卡 —— 各自**独立**的一组滑块。
+        //
+        // ★ 原先三张卡共用转向卡那一份 x/y/size，结果媒体卡与转向卡
+        //   永远重叠、无法分开摆（用户实测反馈）。所以每张卡一套：
+        //   转向卡（上面那组） / 媒体卡（下面这组） / 通话卡（再下面）。
+        val mediaOn = AirPlayPersistence.loadClusterMediaCardEnabled(this)
+        toggle(card, getString(R.string.cluster_media_card),
+            getString(R.string.cluster_media_card_description), mediaOn) {
+            AirPlayPersistence.saveClusterMediaCardEnabled(this, it)
+            render()
+        }
+        if (mediaOn) {
+            // 封面：仪表屏窄时纯文字两行更清爽，所以给开关而不是写死。
+            toggle(card, getString(R.string.cluster_media_card_artwork),
+                getString(R.string.cluster_media_card_artwork_description),
+                AirPlayPersistence.loadClusterMediaArtwork(this)) {
+                AirPlayPersistence.saveClusterMediaArtwork(this, it)
+            }
+            addCardGeometrySliders(
+                card,
+                prefix = "media", onChanged = ::refreshClusterPreview,
+                loadX = { AirPlayPersistence.loadClusterMediaXPercent(this) },
+                loadY = { AirPlayPersistence.loadClusterMediaYPercent(this) },
+                loadSize = { AirPlayPersistence.loadClusterMediaSizePercent(this) },
+                loadOpacity = { AirPlayPersistence.loadClusterMediaOpacityPercent(this) },
+                saveX = { AirPlayPersistence.saveClusterMediaXPercent(this, it) },
+                saveY = { AirPlayPersistence.saveClusterMediaYPercent(this, it) },
+                saveSize = { AirPlayPersistence.saveClusterMediaSizePercent(this, it) },
+                saveOpacity = { AirPlayPersistence.saveClusterMediaOpacityPercent(this, it) },
+            )
+            // B561: 字号滑块 —— 与上面「大小」分开，因为它只改字不动卡。
+            // 用户反馈仪表屏上歌名偏小，但把整张卡放大会挡住地图。
+            card.addView(
+                overlaySliderRow(
+                    getString(R.string.cluster_media_text_scale),
+                    com.shilapi.xcertplay.airplay.ClusterTurnCardOverlay.mediaTextScalePercents,
+                    AirPlayPersistence.loadClusterMediaTextScalePercent(this),
+                ) { getString(R.string.cluster_media_text_scale_option, it) }
+                    .also { row -> row.onSave = { v ->
+                        AirPlayPersistence.saveClusterMediaTextScalePercent(this, v)
+                        refreshClusterPreview()
+                    } },
+            )
+            // B561: 滚动显示 —— 仪表屏窄，长歌名会被截成"…"，开了就循环走。
+            toggle(
+                card,
+                getString(R.string.cluster_media_scroll_text),
+                getString(R.string.cluster_media_scroll_text_description),
+                AirPlayPersistence.loadClusterMediaScrollText(this),
+            ) { checked ->
+                AirPlayPersistence.saveClusterMediaScrollText(this, checked)
+                refreshClusterPreview()
+            }
+            // ★ B561: 排放方向 + 宽/高独立。
+            //   「大小」滑块是等比缩放（宽高被绑在 2.64:1），
+            //   仪表屏上想要"宽而扁"或"窄而高"做不到，所以给形状单独一组。
+            val orientationOptions = listOf(
+                getString(R.string.cluster_media_orientation_banner),
+                getString(R.string.cluster_media_orientation_vertical),
+                getString(R.string.cluster_media_orientation_free),
+            )
+            val orientations =
+                com.shilapi.xcertplay.airplay.ClusterTurnCardOverlay.CardOrientation.entries
+            choice(
+                card,
+                getString(R.string.cluster_media_orientation),
+                orientationOptions,
+                orientations.indexOf(AirPlayPersistence.loadClusterMediaOrientation(this))
+                    .coerceAtLeast(0),
+                reconnects = false,
+            ) { index ->
+                AirPlayPersistence.saveClusterMediaOrientation(this, orientations[index])
+                refreshClusterPreview()
+            }
+            // 宽/高滑块只在「自由」下显示。
+            //
+            // B561 v67 之后三种方向的几何分工是：
+            // - 横幅（封面在左，2.64:1）/ 正方（封面在上，1:1）
+            //   → 都由**通用「大小」滑块** sizePercent 驱动，比例由方向定，
+            //     所以这里不该再给宽/高 —— 给了也会被忽略。
+            // - 自由 → 宽高各走各的百分比滑块，卡面比例由用户自己拼，
+            //     版式按实际宽高自动切（宽 ≥ 1.15倍高走横幅，否则走正方）。
+            if (AirPlayPersistence.loadClusterMediaOrientation(this) ==
+                com.shilapi.xcertplay.airplay.ClusterTurnCardOverlay.CardOrientation.FREEFORM
+            ) {
+                card.addView(
+                    overlaySliderRow(
+                        getString(R.string.cluster_media_width),
+                        com.shilapi.xcertplay.airplay.ClusterTurnCardOverlay.mediaWidthPercents,
+                        AirPlayPersistence.loadClusterMediaWidthPercent(this),
+                    ) { getString(R.string.cluster_media_width_option, it) }
+                        .also { row -> row.onSave = { v ->
+                            AirPlayPersistence.saveClusterMediaWidthPercent(this, v)
+                            refreshClusterPreview()
+                        } },
+                )
+                card.addView(
+                    overlaySliderRow(
+                        getString(R.string.cluster_media_height),
+                        com.shilapi.xcertplay.airplay.ClusterTurnCardOverlay.mediaHeightPercents,
+                        AirPlayPersistence.loadClusterMediaHeightPercent(this),
+                    ) { getString(R.string.cluster_media_height_option, it) }
+                        .also { row -> row.onSave = { v ->
+                            AirPlayPersistence.saveClusterMediaHeightPercent(this, v)
+                            refreshClusterPreview()
+                        } },
+                )
+            }
+        }
+    }
+
+    private var clusterPreview: ClusterCardPreview? = null
+
+    /**
+     * ★ v69: 拿到（必要时创建并挂上）仪表卡预览。
+     *
+     *媒体卡的设置在「音频」分区、预览在「仪表」分区，两个分区各自 render()
+     * 时互不可见 —— 所以不能只在仪表分区 new。改成**懒初始化**：
+     * 谁先需要谁建，[render] 每次会重建整棵视图树，旧的 View 自然被丢弃，
+     * 而 [clusterPreview] 字段每次 render 开头会置 null，不会出现「一个 View
+     * 被挂进两个父容器」的 crash。
+     */
+    private fun ensureClusterPreview(card: LinearLayout): ClusterCardPreview? {
+        clusterPreview?.let { return it }
+        val created = ClusterCardPreview(this)
+        clusterPreview = created
+        refreshClusterPreview()
+        return created
+    }
+
+    /**
+     * 把当前持久化的四张卡几何/透明度/媒体卡形状推给预览并重绘。
+     *
+     * 每张卡读自己的 `loadClusterXxx`，不是共用转向卡那份 —— 否则预览里
+     * 媒体卡永远停在默认值，用户按预览摆好的位置上车就变了。
+     * 昼夜用 [lastKnownNight]：车机 `uiMode` 常报 UNDEFINED，
+     * 直接读会把预览画成永远白天。
+     */
+    private fun refreshClusterPreview() {
+        val preview = clusterPreview ?: return
+        preview.update(
+            geometry = mapOf(
+                "turn" to Triple(
+                    AirPlayPersistence.loadClusterTurnCardOverlayXPercent(this),
+                    AirPlayPersistence.loadClusterTurnCardOverlayYPercent(this),
+                    AirPlayPersistence.loadClusterTurnCardOverlaySizePercent(this),
+                ),
+                "media" to Triple(
+                    AirPlayPersistence.loadClusterMediaXPercent(this),
+                    AirPlayPersistence.loadClusterMediaYPercent(this),
+                    AirPlayPersistence.loadClusterMediaSizePercent(this),
+                ),
+                "junction" to Triple(
+                    AirPlayPersistence.loadClusterJunctionXPercent(this),
+                    AirPlayPersistence.loadClusterJunctionYPercent(this),
+                    AirPlayPersistence.loadClusterJunctionSizePercent(this),
+                ),
+                "call" to Triple(
+                    AirPlayPersistence.loadClusterCallXPercent(this),
+                    AirPlayPersistence.loadClusterCallYPercent(this),
+                    AirPlayPersistence.loadClusterCallSizePercent(this),
+                ),
+            ),
+            opacity = mapOf(
+                "turn" to AirPlayPersistence.loadClusterTurnCardOpacityPercent(this),
+                "media" to AirPlayPersistence.loadClusterMediaOpacityPercent(this),
+                "junction" to AirPlayPersistence.loadClusterJunctionOpacityPercent(this),
+                "call" to AirPlayPersistence.loadClusterCallOpacityPercent(this),
+            ),
+            night = lastKnownNight,
+        )
+        preview.setMediaTextOptions(
+            AirPlayPersistence.loadClusterMediaTextScalePercent(this),
+            AirPlayPersistence.loadClusterMediaScrollText(this),
+        )
+        preview.setMediaShape(
+            AirPlayPersistence.loadClusterMediaWidthPercent(this),
+            AirPlayPersistence.loadClusterMediaHeightPercent(this),
+            AirPlayPersistence.loadClusterMediaOrientation(this),
+        )
+    }
+
     private fun nightModeLabels() = CarPlayNightMode.entries.map { mode ->
         getString(when (mode) {
             CarPlayNightMode.SYSTEM -> R.string.carplay_night_system
@@ -1010,7 +1257,10 @@ class DiPlayActivity : ComponentActivity() {
         val modes = CarPlayNightMode.entries
         choice(parent, getString(R.string.carplay_night_mode), nightModeLabels(),
             modes.indexOf(AirPlayPersistence.loadCarPlayNightMode(this)), reconnects = false) { index ->
-            AirPlayPersistence.saveCarPlayNightMode(this, modes[index])
+                            AirPlayPersistence.saveCarPlayNightMode(this, modes[index])
+                // 昼夜一改，状态栏配色要立刻跟上（设置页在未连接时也能看到）。
+                applySystemBars()
+                render()
         }
     }
 
@@ -1030,9 +1280,130 @@ class DiPlayActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 仪表分类（用户要求把仪表设置从「导航」里独立出来）。
+     *
+     * 不需要搬代码 —— [renderSections] 按
+     * [SettingsInformationArchitecture.sectionsByCategory] 过滤，而 `CLUSTER_MAP`
+     * 已经从 NAVIGATION 移到 CLUSTER，所以原来那段 `filteredSection(CLUSTER_MAP)`
+     * 代码不动就归到这里了。
+     */
+    /**
+     * B561: 车辆数据回传的开关与实时监测。
+     *
+     * ## 为什么放在「车辆」而不是「诊断」
+     *
+     * 它不是诊断项 —— 开关决定的是**日常**功能（手机地图上有没有续航/电量），
+     * 藏进诊断页等于让用户为了一个常用开关先去翻高级页。
+     *
+     * ## 监测读数为什么直接显示
+     *
+     * VHAL 通不通在车机上完全看不出来（读不到就是静默的）。给一行实时读数，
+     * 用户一眼就能确认"到底有没有读到"，比让他猜省事。读不到时明说
+     * "车辆 VHAL 未就绪"，不显示假的 0。
+     */
+    private fun b561VehicleStatusSection(content: LinearLayout) {
+        val enabled = AirPlayPersistence.loadB561VehicleStatusToIphone(this)
+        section(content, getString(R.string.b561_vehicle_status), R.drawable.ic_dp_car) { card ->
+            // toggle(parent, title, description, value, enabled, save) —— parent 是必填的
+            // 第一参数，别漏（漏了会报"String 但期望 LinearLayout"）。
+            toggle(
+                card,
+                getString(R.string.b561_vehicle_status),
+                getString(R.string.b561_vehicle_status_description),
+                enabled,
+            ) { checked ->
+                AirPlayPersistence.saveB561VehicleStatusToIphone(this, checked)
+                // ★ provider 是在建 controller 时注入的，所以改动**重连后才生效**。
+                //   这里立刻起一次采集，是为了让监测读数马上有数据可看。
+                //   B561 v67：改成绑定**全局活跃**实例 —— 原来这里现new 一个，
+                //   那个实例与 CarPlayHostActivity 里的那个是两回事，
+                //   start 了也永远没人读它的数据（纯白跑两个线程）。
+                if (checked) {
+                    val probe = com.shilapi.xcertplay.vehicle.VehicleProbe
+                    // 已有活跃实例（CarPlayHostActivity 绑过的）就直接复用，
+                    // 不新建 —— 新建会顶掉那个，而它才是真正喂 iAP2 的那个。
+                    val provider = probe.activeStatusProvider()
+                        ?: com.shilapi.xcertplay.vehicle.B561VehicleStatusProvider()
+                            .also { probe.bindStatusProvider(it) }
+                    provider.start(this)
+                }
+                render()
+            }
+            card.addView(label(getString(R.string.b561_vehicle_status_monitor), 16, TEXT, bold = true).apply {
+                setPadding(dp(4), dp(24), dp(4), dp(6))
+            })
+            // B561 v67: 双路来源逐字段显示。VHAL 是 1 Hz 主动轮询，
+            // logcat 是广度优先的补缺通路 —— 用户需要知道"这个数字是谁给的"，
+            // 否则电量突然不显示时无法判断该查权限还是查属性 ID。
+            card.addView(vehicleStatusSourceText())
+            card.addView(vehicleStatusMonitorText())
+        }
+    }
+
+    /**
+     * B561 v67: 双路来源行。
+     *
+     * ★ 必须读 [VehicleProbe] 里注册的那个**活跃** provider。
+     *   原来这里 `CarCabinVehicleStatus()` 是现new 的 —— 那个实例从没start 过，
+     *   读数永远是 null，所以监测面板长期显示"未就绪"，
+     *   哪怕 VHAL 其实是通的（这是上一版就存在的假阴性）。
+     */
+    private fun vehicleStatusSourceText(): android.widget.TextView {
+        val provider = com.shilapi.xcertplay.vehicle.VehicleProbe.activeStatusProvider()
+        val text = if (provider == null) {
+            getString(R.string.b561_vehicle_status_sources_idle)
+        } else {
+            val sources = provider.fieldSources()
+            if (sources.isEmpty()) {
+                getString(R.string.b561_vehicle_status_sources_idle)
+            } else {
+                val body = sources.entries.joinToString("  ") { "${it.key}=${it.value}" }
+                val tap = if (provider.logTapActive()) "logcat:on" else "logcat:off(无 READ_LOGS)"
+                getString(R.string.b561_vehicle_status_sources, tap, body)
+            }
+        }
+        return label(text, 13, MUTED).apply { setPadding(dp(4), dp(4), dp(4), dp(2)) }
+    }
+
+    /** 一行实时读数；读不到就说未就绪，不显示假的 0。 */
+    private fun vehicleStatusMonitorText(): android.widget.TextView {
+        // 同一个活跃 provider —— 见 [vehicleStatusSourceText] 的注释。
+        val reading = com.shilapi.xcertplay.vehicle.VehicleProbe.activeStatusProvider()
+            ?.lastReading()
+        val text = when {
+            !AirPlayPersistence.loadB561VehicleStatusToIphone(this) ->
+                getString(R.string.b561_vehicle_status_off)
+            reading == null -> getString(R.string.b561_vehicle_status_unavailable)
+            reading.batteryPercent != null && reading.rangeKm != null -> getString(
+                R.string.b561_vehicle_status_value,
+                reading.batteryPercent!!,
+                reading.rangeKm!!,
+                reading.speedKph?.let { String.format("%.0f", it) } ?: "--",
+                reading.gearLabel?.toString() ?: "--",
+            )
+            // 电量或续航缺项 —— 部分读数仍然如实显示，不因为一个字段缺就整体报"未就绪"。
+            else -> getString(R.string.b561_vehicle_status_partial, reading.toString())
+        }
+        return label(text, 15, MUTED).apply { setPadding(dp(4), 0, dp(4), 0) }
+    }
+
+    private fun clusterSettings(content: LinearLayout) {
+        settingsPageTitle(
+            content,
+            getString(R.string.cluster_display),
+            getString(R.string.cluster_display_description),
+        )
+        renderSections(
+            content,
+            SettingsInformationArchitecture.sectionsByCategory.getValue(SettingsCategory.CLUSTER),
+        )
+    }
+
     private fun vehicleSettings(content: LinearLayout) {
         settingsPageTitle(content, getString(R.string.settings_vehicle), getString(R.string.settings_vehicle_summary))
         renderSections(content, SettingsInformationArchitecture.sectionsByCategory.getValue(SettingsCategory.VEHICLE))
+        b561VehicleStatusSection(content)
         section(content, getString(R.string.settings_advanced), R.drawable.ic_dp_advanced) { card ->
             card.addView(label(getString(R.string.settings_vehicle_description), 16, MUTED))
             card.addView(button(getString(R.string.settings_open_advanced), false) {
@@ -1389,7 +1760,29 @@ class DiPlayActivity : ComponentActivity() {
                 AirPlayPersistence.saveCallVoiceFilter(this, it)
                 markReconnectNeeded()
             }
+            // ★ B561: 音频焦点 / 高级声道映射 / 主缓冲音频这三个**音频**设置
+            //   已移到「音频 → 音频路由」（见下方 AUDIO_ROUTING 段）。
+            //   它们混在「高级媒体」里，用户找不到 —— 而这三个恰恰是排查
+            //   "导航声/焦点/声道"时最需要动的开关。
+            //   视频相关的（HEVC /  smoothness / 回声消除 / 语音过滤）留在原地。
+        }
+        filteredSection(content, SettingsSection.CAR_BUTTON,
+            getString(R.string.car_button_in_carplay), R.drawable.ic_dp_car) { card -> carButtonCard = card; carButtonControls(card) }
+        filteredSection(content, SettingsSection.AUDIO_ROUTING,
+            getString(R.string.audio_routing), R.drawable.ic_dp_audio) { card ->
+            mediaChannelControl(card)
+            navigationChannelControl(card)
+            val bufferPresets = com.shilapi.xcertplay.media.MediaAudioBuffer.presets
+            choice(card, getString(R.string.music_buffer), listOf(getString(R.string.s_300_ms_default), getString(R.string.s_500_ms), getString(R.string.s_1000_ms_most_stable)),
+                bufferPresets.indexOf(AirPlayPersistence.loadMediaBufferMillis(this)).coerceAtLeast(0)) {
+                AirPlayPersistence.saveMediaBufferMillis(this, bufferPresets[it])
+            }
+            // ★ B561: 以下三项从「高级」搬来 —— 都是音频相关，用户在这找它们。
             audioFocusControls(card)
+            // ★ B561: 「手机提示音声道」—— 修"打字/点击咔哒声从主驾导航喇叭出来"。
+            //   `default`/`alert`/`compatibility` 三条流上既有可能有导航语音，
+            //   也有 UI 提示音，DiPlay 0.2.14 一律送进导航专声区（usage 12）。
+            systemAudioRoutingControls(card)
             if (resources.getBoolean(R.bool.config_advanced_audio_channel_mapping)) {
                 toggle(card, getString(R.string.advanced_audio_channel_mapping),
                     getString(R.string.use_usage_content_type_routing_instead_of_stream_type),
@@ -1403,18 +1796,14 @@ class DiPlayActivity : ComponentActivity() {
                 AirPlayPersistence.saveMainBufferedAudio(this, it)
                 reconnectIfRunning()
             }
-        }
-        filteredSection(content, SettingsSection.CAR_BUTTON,
-            getString(R.string.car_button_in_carplay), R.drawable.ic_dp_car) { card -> carButtonCard = card; carButtonControls(card) }
-        filteredSection(content, SettingsSection.AUDIO_ROUTING,
-            getString(R.string.audio_routing), R.drawable.ic_dp_audio) { card ->
-            mediaChannelControl(card)
-            navigationChannelControl(card)
-            val bufferPresets = com.shilapi.xcertplay.media.MediaAudioBuffer.presets
-            choice(card, getString(R.string.music_buffer), listOf(getString(R.string.s_300_ms_default), getString(R.string.s_500_ms), getString(R.string.s_1000_ms_most_stable)),
-                bufferPresets.indexOf(AirPlayPersistence.loadMediaBufferMillis(this)).coerceAtLeast(0)) {
-                AirPlayPersistence.saveMediaBufferMillis(this, bufferPresets[it])
-            }
+            // ★ v69: 仪表**媒体卡**设置搬到这里（用户要求「把媒体卡片的相关设置
+            //   改到音频中」）—— 媒体卡是播放器的一部分，跟着音频走更符合预期。
+            //   注意只搬媒体卡：转向卡 / 路口卡 / 通话卡留在「仪表」分区，
+            //   它们是导航/来电的产物，不是音频设置。
+            // 媒体卡设置搬来后，这一页也需要能看到卡片摆在哪 ——
+            //   预览与实车共用 ClusterTurnCardOverlay 的几何，所见即所得。
+            ensureClusterPreview(card)?.addTo(card)
+            clusterMediaCardControls(card)
         }
         filteredSection(content, SettingsSection.LOCATION,
             getString(R.string.location), R.drawable.ic_dp_navigation) { card ->
@@ -1426,11 +1815,19 @@ class DiPlayActivity : ComponentActivity() {
         // Cluster video does not require a BYD navigation broadcast receiver.
         filteredSection(content, SettingsSection.CLUSTER_MAP,
             getString(R.string.carplay_map_on_instrument_cluster_experimental), R.drawable.ic_dp_dashboard) { card ->
-            reconnectingToggle(card, getString(R.string.adb_cluster_activity_mode),
-                getString(R.string.adb_cluster_activity_description), AirPlayPersistence.loadAdbClusterEnabled(this)) {
-                AirPlayPersistence.saveAdbClusterEnabled(this, it)
-                ClusterActivityOutput.stopForSettings()
-                render()
+            // ★ B561 隐藏「DiLink 4 cluster video via ADB (experimental)」。
+            //   它依赖 AdbClusterRouter —— 比亚迪 DiLink4 上用 ADB 抢占导航广播的
+            //   专有路径。B561 的仪表是 HDMI 外接副屏,屏名/尺寸既不匹配
+            //   DiLink4ClusterDisplay.matches(),也没有 ADB 可控的原生地图进程,
+            //   所以这一项在 B561 上永远是无效开关,只会让人以为要开它。
+            //   真正的开关是下面那张卡:自动选屏 + 手动指定目标仪表屏。
+            if (!isOushangB561) {
+                reconnectingToggle(card, getString(R.string.adb_cluster_activity_mode),
+                    getString(R.string.adb_cluster_activity_description), AirPlayPersistence.loadAdbClusterEnabled(this)) {
+                    AirPlayPersistence.saveAdbClusterEnabled(this, it)
+                    ClusterActivityOutput.stopForSettings()
+                    render()
+                }
             }
             val adbCluster = AdbClusterRouter.enabled(this)
             if (adbCluster) {
@@ -1460,6 +1857,75 @@ class DiPlayActivity : ComponentActivity() {
                 render()
             }
             if (clusterMapEnabled) {
+                //★★ B561:仪表屏选择控件。
+                //
+                //为什么必须在这里补:0.2.14 把屏判断换成了
+                //`DiLink4ClusterDisplay.matches(name, w, h)` —— 按**屏名 + 尺寸**
+                //硬匹配比亚迪DiLink4(要求 name == "DiLink4" 且 1920×720)。
+                //B561 的仪表是 HDMI 外接副屏,屏名/尺寸都对不上,于是 diLink4=false、
+                //`findDisplay()` 也找不到屏 —— 界面上就只剩「DiLink4 仪表视频(ADB,实验性)」
+                //这一项,**没有选屏入口**。
+                //
+                //旧版(0.2.13)这里是 `ClusterStreamProfile.matches()`,而它的实现是
+                //`= false` —— 刻意的:B561 不做指纹匹配,一律走"枚举副屏 + 用户选屏"。
+                //本控件就是把那套逻辑搬回来。
+                clusterDisplayControl(card, diLink4)
+
+                // ★ v69: 预览与它的刷新函数提升成**成员**（见 refreshClusterPreview）。
+                //   原先它们是 CLUSTER_MAP 分区里的局部 val/fun，而媒体卡设置
+                //   已按用户要求搬到「音频」分区 —— 分区之间拿不到局部变量。
+                clusterPreview = ClusterCardPreview(this)
+                refreshClusterPreview()
+
+                // ★ B561: 路口放大图（车道级导航图）—— 独立一组开关与滑块。
+                //
+                // CarPlay 本身**不发**路口图成品，它只发 0x5202 的路口几何与
+                // 0x5204 的车道数据，由 DiPlay 自己渲染（与原厂仪表同一思路）。
+                // 位置默认落在左侧 24，与转向卡（76）天然错开。
+                toggle(
+                    card,
+                    getString(R.string.cluster_junction_card),
+                    getString(R.string.cluster_junction_card_description),
+                    AirPlayPersistence.loadClusterJunctionCardEnabled(this),
+                ) { checked ->
+                    AirPlayPersistence.saveClusterJunctionCardEnabled(this, checked)
+                    render()
+                }
+                if (AirPlayPersistence.loadClusterJunctionCardEnabled(this)) {
+                    addCardGeometrySliders(
+                        card,
+                        prefix = "junction", onChanged = ::refreshClusterPreview,
+                        loadX = { AirPlayPersistence.loadClusterJunctionXPercent(this) },
+                        loadY = { AirPlayPersistence.loadClusterJunctionYPercent(this) },
+                        loadSize = { AirPlayPersistence.loadClusterJunctionSizePercent(this) },
+                        loadOpacity = { AirPlayPersistence.loadClusterJunctionOpacityPercent(this) },
+                        saveX = { AirPlayPersistence.saveClusterJunctionXPercent(this, it) },
+                        saveY = { AirPlayPersistence.saveClusterJunctionYPercent(this, it) },
+                        saveSize = { AirPlayPersistence.saveClusterJunctionSizePercent(this, it) },
+                        saveOpacity = { AirPlayPersistence.saveClusterJunctionOpacityPercent(this, it) },
+                    )
+                }
+                val callOn = AirPlayPersistence.loadClusterCallCardEnabled(this)
+                toggle(card, getString(R.string.cluster_call_card),
+                    getString(R.string.cluster_call_card_description), callOn) {
+                    AirPlayPersistence.saveClusterCallCardEnabled(this, it)
+                    render()
+                }
+                if (callOn) {
+                    addCardGeometrySliders(
+                        card,
+                        prefix = "call", onChanged = ::refreshClusterPreview,
+                        loadX = { AirPlayPersistence.loadClusterCallXPercent(this) },
+                        loadY = { AirPlayPersistence.loadClusterCallYPercent(this) },
+                        loadSize = { AirPlayPersistence.loadClusterCallSizePercent(this) },
+                        loadOpacity = { AirPlayPersistence.loadClusterCallOpacityPercent(this) },
+                        saveX = { AirPlayPersistence.saveClusterCallXPercent(this, it) },
+                        saveY = { AirPlayPersistence.saveClusterCallYPercent(this, it) },
+                        saveSize = { AirPlayPersistence.saveClusterCallSizePercent(this, it) },
+                        saveOpacity = { AirPlayPersistence.saveClusterCallOpacityPercent(this, it) },
+                    )
+                }
+
                 toggle(card, getString(R.string.center_map_card),
                     if (clusterDisplay != null || adbCluster) getString(R.string.center_map_card_description)
                     else getString(R.string.center_map_card_virtual_description),
@@ -1556,30 +2022,68 @@ class DiPlayActivity : ComponentActivity() {
                             }
                         }
                         if (customCard) {
+                            //★ B561:未连接时也能看到卡片位置。
+                            //
+                            // 仪表屏是 HDMI 外接的**另一块屏**，未连接 iPhone 时那上面
+                            // 什么都没有 —— 拖滑块完全没有反馈，得连上手机、推流、
+                            // 跑到车机另一侧看，才知道改成什么样。实测这就是
+                            // 「调了不知道有没有生效」。
+                            // 预览用**与实车同一套** ClusterTurnCardOverlay.card()几何，
+                            // 所以缩略图里看到的位置/大小与仪表上逐像素一致；
+                            // 另画一套算法就会出现「预览挺好、上车不对」，比没预览更糟。
+                            clusterPreview?.let { p ->
+                                p.setVisibleCards(
+                                    turn = true,
+                                    media = AirPlayPersistence.loadClusterMediaCardEnabled(this@DiPlayActivity),
+                                    call = AirPlayPersistence.loadClusterCallCardEnabled(this@DiPlayActivity),
+                                )
+                                // ★ B561: 路口放大图与另外三张卡一样参与预览 ——
+                                //   它默认落在左侧，与转向卡错开，正好一眼看出两者关系。
+                                p.setJunctionVisible(
+                                    AirPlayPersistence.loadClusterJunctionCardEnabled(this@DiPlayActivity),
+                                )
+                                card.addView(p, matchButton(4, 0).apply {
+                                    // 预览按 8:3 自行测量高度，这里给宽度即可。
+                                    height = 0
+                                })
+                            }
+                            card.addView(label(getString(R.string.cluster_card_preview_hint), 14, MUTED))
                             card.addView(overlaySliderRow(
                                 getString(R.string.turn_card_overlay_size),
                                 ClusterTurnCardOverlay.sizePercents,
                                 AirPlayPersistence.loadClusterTurnCardOverlaySizePercent(this),
                             ) { it -> getString(R.string.turn_card_overlay_size_option, it) }
-                                .also { it.onSave = { v -> AirPlayPersistence.saveClusterTurnCardOverlaySizePercent(this, v) } })
+                                .also { it.onSave = { v ->
+                                    AirPlayPersistence.saveClusterTurnCardOverlaySizePercent(this, v)
+                                    refreshClusterPreview()
+                                } })
                             card.addView(overlaySliderRow(
                                 getString(R.string.turn_card_overlay_opacity),
                                 ClusterTurnCardOverlay.opacityPercents,
                                 AirPlayPersistence.loadClusterTurnCardOpacityPercent(this),
                             ) { it -> getString(R.string.turn_card_overlay_opacity_option, it) }
-                                .also { it.onSave = { v -> AirPlayPersistence.saveClusterTurnCardOpacityPercent(this, v) } })
+                                .also { it.onSave = { v ->
+                                    AirPlayPersistence.saveClusterTurnCardOpacityPercent(this, v)
+                                    refreshClusterPreview()
+                                } })
                             card.addView(overlaySliderRow(
                                 getString(R.string.turn_card_overlay_horizontal),
                                 ClusterTurnCardOverlay.xPercents,
                                 AirPlayPersistence.loadClusterTurnCardOverlayXPercent(this),
                             ) { it -> overlayOffsetLabel(it, getString(R.string.marker_left), getString(R.string.marker_right), 50) }
-                                .also { it.onSave = { v -> AirPlayPersistence.saveClusterTurnCardOverlayXPercent(this, v) } })
+                                .also { it.onSave = { v ->
+                                    AirPlayPersistence.saveClusterTurnCardOverlayXPercent(this, v)
+                                    refreshClusterPreview()
+                                } })
                             card.addView(overlaySliderRow(
                                 getString(R.string.turn_card_overlay_vertical),
                                 ClusterTurnCardOverlay.yPercents,
                                 AirPlayPersistence.loadClusterTurnCardOverlayYPercent(this),
                             ) { it -> overlayOffsetLabel(it, getString(R.string.marker_up), getString(R.string.marker_down), 40) }
-                                .also { it.onSave = { v -> AirPlayPersistence.saveClusterTurnCardOverlayYPercent(this, v) } })
+                                .also { it.onSave = { v ->
+                                    AirPlayPersistence.saveClusterTurnCardOverlayYPercent(this, v)
+                                    refreshClusterPreview()
+                                } })
                             card.addView(button(getString(R.string.reset_turn_card_overlay), false) {
                                 AirPlayPersistence.saveClusterTurnCardOverlayXPercent(this, ClusterTurnCardOverlay.DEFAULT_X_PERCENT)
                                 AirPlayPersistence.saveClusterTurnCardOverlayYPercent(this, ClusterTurnCardOverlay.DEFAULT_Y_PERCENT)
@@ -1649,6 +2153,110 @@ class DiPlayActivity : ComponentActivity() {
         }
         languageSettings(content)
     }
+
+    /**
+     * 长安欧尚 B561:仪表屏选择控件。
+     *
+     * 列出除主屏外的所有可用屏幕,供用户指定 CarPlay 导航/媒体信息的出图目标。
+     *
+     * ## 为什么 B561 必须有它,而 0.2.14 原版没有
+     *
+     * 0.2.14 靠 `DiLink4ClusterDisplay.matches(name, w, h)` 判定仪表屏,那是
+     * **比亚迪专属指纹**(`name == "DiLink4"` 且 1920×720)。B561 的仪表是 HDMI
+     * 外接副屏,屏名与尺寸都不匹配 —— `diLink4` 恒 false,`findDisplay()` 也没有
+     * 候选,于是界面上只剩「DiLink4 仪表视频(ADB,实验性)」,**没有选屏入口**。
+     *
+     * 0.2.13 的做法是 `ClusterStreamProfile.matches()` 直接 `= false`:
+     * 刻意不做指纹匹配,凡是 B561 一律走"枚举副屏 + 用户选屏"。本方法把那套逻辑
+     * 搬回新版,并在 [diLink4] 为真时让位给官方控件(两套不并存)。
+     *
+     * @param diLink4 官方 DiLink4 路径已接管时为真 —— 此时不重复显示选屏控件。
+     */
+    private fun clusterDisplayControl(parent: LinearLayout, diLink4: Boolean) {
+        // DiLink 路径下屏是确定的(指纹匹配出来的),让用户手选只会与官方逻辑打架。
+        if (diLink4) return
+
+        val candidates = com.shilapi.xcertplay.cluster.ClusterDisplayCatalog.candidates(this)
+
+        toggle(
+            parent, "自动选择仪表屏",
+            "开启后自动使用检测到的第一块副屏;关闭后可手动指定。",
+            com.shilapi.xcertplay.cluster.ClusterDisplayCatalog.autoFollow(this),
+        ) { enabled ->
+            com.shilapi.xcertplay.cluster.ClusterDisplayCatalog.setAutoFollow(this, enabled)
+            render()
+        }
+
+        if (candidates.isEmpty()) {
+            parent.addView(
+                label(
+                    "未检测到副屏。请确认仪表屏已点亮并接入 HDMI 后,重新进入此页面。",
+                    14, MUTED,
+                ).apply { setPadding(0, dp(12), 0, dp(4)) },
+            )
+            return
+        }
+
+        val selected = com.shilapi.xcertplay.cluster.ClusterDisplayCatalog.selectedId(this)
+        val resolved = com.shilapi.xcertplay.cluster.ClusterDisplayCatalog.resolve(this)
+        val currentLabel = resolved?.displayId?.let { id ->
+            candidates.firstOrNull { it.displayId == id }?.describe()
+        } ?: "未选择"
+
+        val control = button("目标仪表屏: $currentLabel", false) {}
+        control.setOnClickListener {
+            val labels = candidates.map { it.describe() }.toTypedArray()
+            val current = candidates.indexOfFirst { it.displayId == selected }.takeIf { it >= 0 } ?: 0
+            AlertDialog.Builder(this)
+                .setTitle("选择仪表屏")
+                .setSingleChoiceItems(labels, current) { dialog, which ->
+                    val picked = candidates[which]
+                    // ★ 显式选屏必须同时关掉 autoFollow ——
+                    //   resolve() 只在 !autoFollow() 时才读 selectedId,
+                    //   忘了关就是"选了没反应"。
+                    com.shilapi.xcertplay.cluster.ClusterDisplayCatalog
+                        .setAutoFollow(this, false)
+                    com.shilapi.xcertplay.cluster.ClusterDisplayCatalog
+                        .setSelectedId(this, picked.displayId)
+                    dialog.dismiss()
+                    render()
+                }
+                .setNegativeButton(getString(R.string.cancel), null)
+                .show()
+        }
+        parent.addView(control, matchButton(10, 60))
+
+        parent.addView(
+            label("共检测到 ${candidates.size} 块副屏。切换后需重新连接 iPhone 生效。", 14, MUTED)
+                .apply { setPadding(0, dp(8), 0, dp(4)) },
+        )
+    }
+
+    /**
+     * 是否应隐藏「DiLink 4 cluster video via ADB (experimental)」。
+     *
+     * ## 判据
+     *
+     * 只在**存在非比亚迪的物理外接副屏**时为真 —— 那说明这台车走的是
+     * "HDMI 外接仪表屏"路线，比亚迪 ADB 抢占原生导航广播那条路对它没有意义，
+     * 开关留着只会让人以为要开它。
+     *
+     * ★ 必须"只有非比亚迪的屏"才为真。若系统里同时存在比亚迪命名
+     *   （`fission_bg_*` / `shared_fission_*` / DiLink）的屏，说明这是比亚迪车，
+     *   开关必须留着 —— 误藏会让 `ClusterSettingsConsentTest` 在设置里
+     *   `single { contentDescription == adb_cluster_activity_mode }` 抛
+     *   NoSuchElementException，也让真·比亚迪用户找不到这个开关。
+     *   判据与 `ClusterMapPresentation.findDisplay()` 的 B561 分支保持一致。
+     */
+    private val isOushangB561: Boolean
+        get() {
+            val candidates = com.shilapi.xcertplay.cluster.ClusterDisplayCatalog.candidates(this)
+            val bydNamed = candidates.any { candidate ->
+                val name = candidate.name.lowercase()
+                name.contains("dilink") || name.contains("byd") || name.contains("fission")
+            }
+            return candidates.isNotEmpty() && !bydNamed
+        }
 
     private fun about(content: LinearLayout) {
         content.addView(label(getString(R.string.diplay), 40, TEXT, true))
@@ -2142,6 +2750,53 @@ class DiPlayActivity : ComponentActivity() {
     private fun overlaySliderRow(title: String, values: List<Int>, current: Int, describe: (Int) -> String): OverlaySliderRow =
         OverlaySliderRow(this, title, values, current, describe)
 
+    /**
+     * 给某张仪表卡加一整套「大小 / 透明度 / 水平 / 垂直」滑块。
+     *
+     * 三张卡各有**独立**一套 —— 共用一套会让它们永远重叠在同一点，用户没法
+     * 把媒体卡摆到转向卡旁边（这正是实测反馈的问题）。
+     *
+     * 读写都靠参数传入：每张卡的持久化键不同（`loadX`/`saveX`…），
+     * 与其在这里按 prefix 拼键名，不如让调用方显式给 —— 拼错键名是静默的，
+     * 表现为"滑块拖了没反应"，很难查。
+     */
+    private fun addCardGeometrySliders(
+        card: LinearLayout,
+        prefix: String,
+        /** 每次滑块变化后回调，让预览跟着动（媒体/通话卡的几何与转向卡独立）。 */
+        onChanged: () -> Unit = {},
+        loadX: () -> Int,
+        loadY: () -> Int,
+        loadSize: () -> Int,
+        loadOpacity: () -> Int,
+        saveX: (Int) -> Unit,
+        saveY: (Int) -> Unit,
+        saveSize: (Int) -> Unit,
+        saveOpacity: (Int) -> Unit,
+    ) {
+        val label = when (prefix) {
+            "media" -> getString(R.string.cluster_media_card)
+            "junction" -> getString(R.string.cluster_junction_card)
+            else -> getString(R.string.cluster_call_card)
+        }
+        card.addView(overlaySliderRow("$label · ${getString(R.string.cluster_card_size)}",
+            ClusterTurnCardOverlay.sizePercents, loadSize()) {
+            getString(R.string.turn_card_overlay_size_option, it)
+        }.also { it.onSave = { v -> saveSize(v); onChanged() } })
+        card.addView(overlaySliderRow("$label · ${getString(R.string.cluster_card_opacity)}",
+            ClusterTurnCardOverlay.opacityPercents, loadOpacity()) {
+            getString(R.string.turn_card_overlay_opacity_option, it)
+        }.also { it.onSave = { v -> saveOpacity(v); onChanged() } })
+        card.addView(overlaySliderRow("$label · ${getString(R.string.cluster_card_horizontal)}",
+            ClusterTurnCardOverlay.xPercents, loadX()) {
+            overlayOffsetLabel(it, getString(R.string.marker_left), getString(R.string.marker_right), 50)
+        }.also { it.onSave = { v -> saveX(v); onChanged() } })
+        card.addView(overlaySliderRow("$label · ${getString(R.string.cluster_card_vertical)}",
+            ClusterTurnCardOverlay.yPercents, loadY()) {
+            overlayOffsetLabel(it, getString(R.string.marker_up), getString(R.string.marker_down), 40)
+        }.also { it.onSave = { v -> saveY(v); onChanged() } })
+    }
+
     private inner class OverlaySliderRow(
         context: android.content.Context,
         title: String,
@@ -2162,7 +2817,13 @@ class DiPlayActivity : ComponentActivity() {
             slider = SeekBar(context).apply {
                 max = steps.lastIndex
                 progress = steps.indexOf(current).coerceIn(steps.indices)
-                minHeight = dp(44)
+                // ★ 不要再写 `minHeight = dp(44)`。
+                //   `AbsSeekBar.setMinHeight()` 是 **API 30** 才加的，车机是 API 28 ——
+                //   编译毫无提示（compileSdk 37），一到运行就
+                //   `NoSuchMethodError: No virtual method setMinHeight(I)V in class
+                //   android/widget/SeekBar`，崩在 DiPlayActivity$OverlaySliderRow.<init>，
+                //   现象是「设置里点导航/仪表分类就闪退」。
+                //   高度由下面 addView 的 LayoutParams 定死即可。
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                         val value = steps[progress.coerceIn(steps.indices)]
@@ -3904,6 +4565,19 @@ class DiPlayActivity : ComponentActivity() {
                     appendLine("--- Standalone HUD compatibility ---")
                     appendLine(BydOutputSettings.standaloneHudDiagnosticReport(appContext))
                     appendLine()
+                    // ★ B561 音区/多音区探测 —— usage=12 判断的判决点。
+                    //   原厂 launcher 用 CarAudioManager / 厂商 STREAM_NAVI(=12) 做导航专声区，
+                    //   我们需要知道这台车机到底提供哪一套。两种结果都有用：
+                    //   找到 CarAudioService → 能读完整 usage↔音区映射；
+                    //   找不到 → 证实 usage=12 是唯一入口，当前做法正确。
+                    appendLine("--- B561 audio zones / CarAudioService (usage=12 verification) ---")
+                    runCatching { com.shilapi.xcertplay.vehicle.VehicleProbe.report(appContext) }
+                        .getOrElse { appendLine("probe failed: ${it.javaClass.simpleName}: ${it.message}") }
+                        .lineSequence()
+                        .forEach { line ->
+                            DiagnosticRedactor.redact(line)?.let { appendLine(it) }
+                        }
+                    appendLine()
                     appendLine("--- BYD vehicle-data probe ---")
                     appendLine(
                         "mode=${if (BydOutputSettings.legacyVehicleProbe(appContext)) "legacy-probe" else "default"} " +
@@ -4116,8 +4790,54 @@ class DiPlayActivity : ComponentActivity() {
         if (page == "settings") normalizeSpacing(card)
         parent.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(18) })
     }
-    private fun audioFocusControls(parent: LinearLayout) {
-        val enabled = AirPlayPersistence.loadAudioFocusEnabled(this)
+    /**
+     * B561: 「手机提示音」与「导航专声」的两档路由。
+     *
+     * ## 背景（实车反馈）
+     *
+     * 1. `system_audio_routing`（默认**开**）：把 `alert`/`compatibility` 以及
+     *    **无导航时**的 `default` 流送到 [AudioChannel.SYSTEM]
+     *    （`USAGE_ASSISTANCE_SONIFICATION`）—— 全车可听、不抢焦点。
+     *    这条修的是"在手机上打字，咔哒声从车辆导航喇叭出来"。
+     * 2. `navigation_voice_scope`：有导航时 `default` 要不要进「只主驾发声」区。
+     *    默认 [GUIDANCE_ONLY]（只在导航中生效）；[ALWAYS] 是 0.2.14 的原始行为，
+     *    [OFF] 则导航语音也全车可听。
+     *
+     * 两者都只影响**之后**建立的音频流，所以标了「重连后生效」。
+     */
+    private fun systemAudioRoutingControls(parent: LinearLayout) {
+        val scope = AirPlayPersistence.loadNavigationVoiceScope(this)
+        val options = listOf(
+            getString(R.string.settings_nav_voice_scope_guidance_only),
+            getString(R.string.settings_nav_voice_scope_always),
+            getString(R.string.settings_nav_voice_scope_off),
+        )
+        val scopes = com.shilapi.xcertplay.media.NavigationVoiceScope.entries
+        choice(
+            parent,
+            getString(R.string.settings_nav_voice_scope),
+            options,
+            scopes.indexOf(scope).coerceAtLeast(0),
+            reconnects = false,
+        ) { index ->
+            AirPlayPersistence.saveNavigationVoiceScope(this, scopes[index])
+            markReconnectNeeded()
+        }
+        parent.addView(label(getString(R.string.settings_nav_voice_scope_description), 14, MUTED).apply {
+            setPadding(0, 0, 0, dp(12))
+        })
+        toggle(
+            parent,
+            getString(R.string.settings_system_audio_routing),
+            getString(R.string.settings_system_audio_routing_description),
+            AirPlayPersistence.loadSystemAudioRouting(this),
+        ) { checked ->
+            AirPlayPersistence.saveSystemAudioRouting(this, checked)
+            markReconnectNeeded()
+        }
+    }
+
+    private fun audioFocusControls(parent: LinearLayout) {        val enabled = AirPlayPersistence.loadAudioFocusEnabled(this)
         val dependent = column().apply { visibility = if (enabled) View.VISIBLE else View.GONE }
         toggle(parent, getString(R.string.contrib_audio_home_toggle_audio_focus),
             getString(R.string.contrib_audio_home_toggle_audio_focus_desc), enabled) {

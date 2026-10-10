@@ -48,6 +48,12 @@ object AirPlayPersistence {
     private const val KEY_MEDIA_AUDIO_CHANNEL = "media_audio_channel"
     private const val KEY_NAVIGATION_AUDIO_CHANNEL = "navigation_audio_channel"
     private const val KEY_NAVIGATION_STREAM_TYPE = "navigation_stream_type"
+
+    /** B561: `default` 流（导航语音＋UI 提示音共流）的去向策略。 */
+    private const val KEY_NAVIGATION_VOICE_SCOPE = "navigation_voice_scope"
+
+    /** B561: UI 提示音（打字/点击咔哒声）是否走系统声道而不是导航专声区。 */
+    private const val KEY_SYSTEM_AUDIO_ROUTING = "system_audio_routing"
     private const val KEY_WIRELESS_ENABLED = "wireless_enabled"
     private const val KEY_WIRELESS_HOTSPOT_MODE = "wireless_hotspot_mode"
     private const val KEY_WIFI_P2P_PREFERRED_CHANNEL = "wifi_p2p_preferred_channel"
@@ -134,6 +140,300 @@ object AirPlayPersistence {
 
     private const val KEY_CLUSTER_TURN_CARD_OVERLAY_SIZE_PERCENT = "cluster_turn_card_overlay_size_percent"
     private const val KEY_CLUSTER_TURN_CARD_OPACITY = "cluster_turn_card_opacity_percent"
+
+    /** B561 仪表媒体卡 / 通话卡开关。 */
+    private const val KEY_CLUSTER_MEDIA_CARD = "cluster_media_card_enabled"
+    private const val KEY_CLUSTER_CALL_CARD = "cluster_call_card_enabled"
+
+    /**
+     * B561: 把车辆数据（电量/续航）回传手机 CarPlay。
+     *
+     * 刻意**不复用** `BydOutputSettings.batteryToIphone`：那个的
+     * `batteryToIphoneActive()` 里套着 `supportedInSelectedMode { it.batterySupported }`
+     * 门禁，而那是比亚迪 SOME/IP 能力探测的结果 —— B561 上永远 false，
+     * 复用会让开关打开也没数据。
+     */
+    private const val KEY_B561_VEHICLE_STATUS_TO_IPHONE = "b561_vehicle_status_to_iphone"
+
+    // ★ B561: 每张卡**独立**的几何。原先三张卡共用转向卡那一份x/y/size，
+    // 结果媒体卡与转向卡永远重叠、无法分开摆 —— 用户抱怨"重合无法单独调整"。
+    // 通话卡默认落在**下方错开**，避免与转向卡/媒体卡撞一起。
+    private const val KEY_CLUSTER_MEDIA_X = "cluster_media_card_x_percent"
+    private const val KEY_CLUSTER_MEDIA_Y = "cluster_media_card_y_percent"
+    private const val KEY_CLUSTER_MEDIA_SIZE = "cluster_media_card_size_percent"
+    private const val KEY_CLUSTER_MEDIA_OPACITY = "cluster_media_card_opacity_percent"
+    private const val KEY_CLUSTER_MEDIA_ARTWORK = "cluster_media_card_artwork"
+    private const val KEY_CLUSTER_MEDIA_TEXT_SCALE = "cluster_media_card_text_scale"
+    private const val KEY_CLUSTER_MEDIA_WIDTH = "cluster_media_card_width_percent"
+    private const val KEY_CLUSTER_MEDIA_HEIGHT = "cluster_media_card_height_percent"
+    private const val KEY_CLUSTER_MEDIA_ORIENTATION = "cluster_media_card_orientation"
+    private const val KEY_CLUSTER_MEDIA_SCROLL_TEXT = "cluster_media_card_scroll_text"
+
+    private const val KEY_CLUSTER_CALL_X = "cluster_call_card_x_percent"
+    private const val KEY_CLUSTER_CALL_Y = "cluster_call_card_y_percent"
+    private const val KEY_CLUSTER_CALL_SIZE = "cluster_call_card_size_percent"
+    private const val KEY_CLUSTER_CALL_OPACITY = "cluster_call_card_opacity_percent"
+
+    /**
+     * B561: 路口放大图（车道级导航图）。
+     *
+     * 默认落在**左侧**（x=24）—— 转向卡默认在右侧 76，两者天然错开，
+     * 不需要用户先挪开就能同时看见。
+     */
+    private const val KEY_CLUSTER_JUNCTION_ENABLED = "cluster_junction_card_enabled"
+    private const val KEY_CLUSTER_JUNCTION_X = "cluster_junction_card_x_percent"
+    private const val KEY_CLUSTER_JUNCTION_Y = "cluster_junction_card_y_percent"
+    private const val KEY_CLUSTER_JUNCTION_SIZE = "cluster_junction_card_size_percent"
+    private const val KEY_CLUSTER_JUNCTION_OPACITY = "cluster_junction_card_opacity_percent"
+
+    /** B561: 路口放大图默认几何（与 KEY_CLUSTER_JUNCTION_* 的默认值一致）。 */
+    private const val DEFAULT_CLUSTER_JUNCTION_X = 24
+    private const val DEFAULT_CLUSTER_JUNCTION_Y = 30
+    private const val DEFAULT_CLUSTER_JUNCTION_SIZE = ClusterTurnCardOverlay.DEFAULT_SIZE_PERCENT
+
+    /**
+     * B561: 车况回传手机 CarPlay 的开关。默认**开** ——
+     * 手机地图上的续航/电量是常用信息，不该藏在设置里。
+     */
+    fun loadB561VehicleStatusToIphone(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_B561_VEHICLE_STATUS_TO_IPHONE, true)
+
+    fun saveB561VehicleStatusToIphone(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_B561_VEHICLE_STATUS_TO_IPHONE, enabled).apply()
+    }
+
+    /** 媒体卡是否显示封面（0x5001 不带封面，取自 AndroidMediaSink 的解码帧）。 */
+    fun loadClusterMediaArtwork(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CLUSTER_MEDIA_ARTWORK, true)
+
+    fun saveClusterMediaArtwork(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_MEDIA_ARTWORK, enabled).apply()
+    }
+
+    /**
+     * B561: 媒体卡文字大小百分比。
+     *
+     * 与「卡片大小」是两件事：那个改整张卡（背景+封面一起缩放，字跟着等比变小），
+     * 这个**只改字号**，所以用户想放大歌名时不必把整张卡也放大。
+     * 默认 100 = 上游原始规格，保持升级前的观感不变。
+     */
+    fun loadClusterMediaTextScalePercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_MEDIA_TEXT_SCALE, 100)
+
+    fun saveClusterMediaTextScalePercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_MEDIA_TEXT_SCALE, percent.coerceIn(60, 180)).apply()
+    }
+
+    /**
+     * B561: 媒体卡宽度百分比（可视区宽度的百分比）。
+     *
+     * 与「大小」滑块的区别：那个改的是**等比缩放**整张卡（宽高同时变），
+     * 这个**只管宽**。配合 [KEY_CLUSTER_MEDIA_HEIGHT] 可以自由定形状。
+     */
+    fun loadClusterMediaWidthPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(
+                KEY_CLUSTER_MEDIA_WIDTH,
+                ClusterTurnCardOverlay.DEFAULT_MEDIA_WIDTH_PERCENT,
+            )
+
+    fun saveClusterMediaWidthPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_MEDIA_WIDTH, percent).apply()
+    }
+
+    /** B561: 媒体卡高度百分比（可视区高度的百分比）。 */
+    fun loadClusterMediaHeightPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(
+                KEY_CLUSTER_MEDIA_HEIGHT,
+                ClusterTurnCardOverlay.DEFAULT_MEDIA_HEIGHT_PERCENT,
+            )
+
+    fun saveClusterMediaHeightPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_MEDIA_HEIGHT, percent).apply()
+    }
+
+    /**
+     * B561: 媒体卡排放方向。
+     *
+     * 存名字而不是序号 —— 以后往枚举里插新值不会让用户的设置错位。
+     */
+    fun loadClusterMediaOrientation(context: Context): ClusterTurnCardOverlay.CardOrientation =
+        ClusterTurnCardOverlay.CardOrientation.entries.firstOrNull {
+            it.name == context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_CLUSTER_MEDIA_ORIENTATION, null)
+        } ?: ClusterTurnCardOverlay.CardOrientation.FREEFORM
+
+    fun saveClusterMediaOrientation(context: Context, orientation: ClusterTurnCardOverlay.CardOrientation) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_CLUSTER_MEDIA_ORIENTATION, orientation.name).apply()
+    }
+
+    /**
+     * B561: 媒体卡歌名/歌手是否滚动显示。
+     *
+     * 默认**关闭**：多数歌名字数不多，静态显示更稳；只有长曲目名被截断成"…"时
+     * 才值得开滚动。开启后宽度够时仍是静态文本，所以代价很小。
+     */
+    fun loadClusterMediaScrollText(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CLUSTER_MEDIA_SCROLL_TEXT, false)
+
+    fun saveClusterMediaScrollText(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_MEDIA_SCROLL_TEXT, enabled).apply()
+    }
+
+    /** 三种卡各自的 x/y/size/opacity。默认值不同 —— 媒体卡偏左下、通话卡居中偏下。 */
+    fun loadClusterMediaXPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_MEDIA_X, 24)
+
+    fun saveClusterMediaXPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_MEDIA_X, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    fun loadClusterMediaYPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_MEDIA_Y, 72)
+
+    fun saveClusterMediaYPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_MEDIA_Y, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    fun loadClusterMediaSizePercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_MEDIA_SIZE, ClusterTurnCardOverlay.DEFAULT_SIZE_PERCENT)
+
+    fun saveClusterMediaSizePercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_MEDIA_SIZE, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    fun loadClusterMediaOpacityPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_MEDIA_OPACITY, ClusterTurnCardOverlay.DEFAULT_OPACITY_PERCENT)
+
+    fun saveClusterMediaOpacityPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_MEDIA_OPACITY, percent.coerceIn(20, 100)).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    fun loadClusterCallXPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_CALL_X, 50)
+
+    fun saveClusterCallXPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_CALL_X, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    fun loadClusterCallYPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_CALL_Y, 18)
+
+    fun saveClusterCallYPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_CALL_Y, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    fun loadClusterCallSizePercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_CALL_SIZE, ClusterTurnCardOverlay.DEFAULT_SIZE_PERCENT)
+
+    fun saveClusterCallSizePercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_CALL_SIZE, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    fun loadClusterCallOpacityPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_CALL_OPACITY, ClusterTurnCardOverlay.DEFAULT_OPACITY_PERCENT)
+
+    fun saveClusterCallOpacityPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_CALL_OPACITY, percent.coerceIn(20, 100)).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    // ── B561: 路口放大图（车道级导航图）──────────────────────────────────
+
+    /**
+     * B561: 是否显示路口放大图。
+     *
+     * 默认**开**：这是 iPhone 唯一会下发的车道级数据，也是原厂仪表最有价值的
+     * 那一块。用户不要可以关掉，与转向卡互不影响。
+     */
+    fun loadClusterJunctionCardEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CLUSTER_JUNCTION_ENABLED, true)
+
+    fun saveClusterJunctionCardEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_JUNCTION_ENABLED, enabled).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    /** B561: 路口放大图水平位置（面板宽的百分比）。默认 24，与转向卡（76）错开。 */
+    fun loadClusterJunctionXPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_JUNCTION_X, DEFAULT_CLUSTER_JUNCTION_X)
+
+    fun saveClusterJunctionXPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_JUNCTION_X, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    /** B561: 路口放大图垂直位置（面板高的百分比）。 */
+    fun loadClusterJunctionYPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_JUNCTION_Y, DEFAULT_CLUSTER_JUNCTION_Y)
+
+    fun saveClusterJunctionYPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_JUNCTION_Y, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    /** B561: 路口放大图大小（可视区宽的百分比，等比）。 */
+    fun loadClusterJunctionSizePercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_JUNCTION_SIZE, DEFAULT_CLUSTER_JUNCTION_SIZE)
+
+    fun saveClusterJunctionSizePercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_JUNCTION_SIZE, percent).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    /** B561: 路口放大图背景不透明度（20..100）。 */
+    fun loadClusterJunctionOpacityPercent(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CLUSTER_JUNCTION_OPACITY, ClusterTurnCardOverlay.DEFAULT_OPACITY_PERCENT)
+
+    fun saveClusterJunctionOpacityPercent(context: Context, percent: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_CLUSTER_JUNCTION_OPACITY, percent.coerceIn(20, 100)).apply()
+        overlaySettingsListener?.invoke()
+    }
 
     fun loadDisplayScaleTenths(context: Context): Int {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -239,6 +539,45 @@ object AirPlayPersistence {
     fun saveNavigationAudioChannel(context: Context, channel: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putInt(KEY_NAVIGATION_AUDIO_CHANNEL, channel.takeIf { it in AUDIO_CHANNELS } ?: 0)
+            .apply()
+    }
+
+    /**
+     * B561: `default` 流（导航语音与 UI 提示音共流）的去向。
+     *
+     * 默认 [NavigationVoiceScope.GUIDANCE_ONLY] —— 只在真有导航路线时把这条流
+     * 送进「只主驾发声」的导航声区；没有路线时它上面只有界面咔哒声，
+     * 必须走系统声道（否则表现为"打字声从导航喇叭出来"）。
+     */
+    fun loadNavigationVoiceScope(context: Context): com.shilapi.xcertplay.media.NavigationVoiceScope =
+        com.shilapi.xcertplay.media.NavigationVoiceScope.fromKey(
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_NAVIGATION_VOICE_SCOPE, null),
+        )
+
+    fun saveNavigationVoiceScope(
+        context: Context,
+        scope: com.shilapi.xcertplay.media.NavigationVoiceScope,
+    ) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_NAVIGATION_VOICE_SCOPE, scope.name)
+            .apply()
+    }
+
+    /**
+     * B561: `alert`/`compatibility`（提示音）是否走 [AudioChannel.SYSTEM]。
+     *
+     * 默认 true —— 这正是"手机打字声不该走车辆导航声道"的修复开关。
+     * 关掉即回到 DiPlay 0.2.14 的原始映射（并入导航/媒体），
+     * 保留它是为了在实车上做 A/B 对照，确认到底是哪条流在响。
+     */
+    fun loadSystemAudioRouting(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SYSTEM_AUDIO_ROUTING, true)
+
+    fun saveSystemAudioRouting(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_SYSTEM_AUDIO_ROUTING, enabled)
             .apply()
     }
 
@@ -1010,4 +1349,31 @@ object AirPlayPersistence {
 
     private fun safeAreaKey(widthPixels: Int, heightPixels: Int): String =
         "$SAFE_AREA_KEY_PREFIX${widthPixels}x$heightPixels"
+
+    // ------------------------------------------------- B561 仪表媒体卡 / 通话卡开关
+
+    /**
+     * 仪表媒体卡开关。默认**关** —— 仪表屏上多盖一块卡是驾驶员要衡量的，
+     * 不该默认替用户做主。用户想要歌名时自己打开。
+     */
+    fun loadClusterMediaCardEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CLUSTER_MEDIA_CARD, false)
+
+    fun saveClusterMediaCardEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_MEDIA_CARD, enabled).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    /** 仪表通话卡开关。默认**开**：来电是安全相关信息，不该被设置藏起来。 */
+    fun loadClusterCallCardEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CLUSTER_CALL_CARD, true)
+
+    fun saveClusterCallCardEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_CALL_CARD, enabled).apply()
+        overlaySettingsListener?.invoke()
+    }
 }

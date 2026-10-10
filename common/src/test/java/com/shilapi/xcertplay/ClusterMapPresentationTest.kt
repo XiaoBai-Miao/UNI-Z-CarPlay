@@ -57,7 +57,10 @@ class ClusterMapPresentationTest {
         org.robolectric.shadows.ShadowBuild.setFingerprint(DiLink51ClusterLayout.FINGERPRINT)
         DiLink51ClusterLayout.saveContrast(context, DiLink51ClusterLayout.Contrast.DARK)
         try {
-            withPresentation(DiLink51ClusterLayout.FULL, DiLink51ClusterLayout.Theme.MAP) { presentation ->
+            withPresentation(
+                name = DiLink51ClusterLayout.FULL,
+                theme = DiLink51ClusterLayout.Theme.MAP,
+            ) { presentation ->
                 val label: android.widget.TextView = org.robolectric.util.ReflectionHelpers.getField(presentation, "waitingLabel")
                 assertEquals(android.graphics.Color.WHITE, label.currentTextColor)
             }
@@ -85,18 +88,77 @@ class ClusterMapPresentationTest {
         assertEquals(android.view.View.VISIBLE, label.visibility)
     }
 
+    /**
+     * B561: 深色模式下等待页必须是**黑底白字**。
+     *
+     * 实测反馈：夜间模式下仪表上是一块惨白的"等待 CarPlay 地图"。
+     *
+     * 根因是 `DiLink51ClusterLayout.dark()` 只认比亚迪那套"对比度设置/主题"，
+     * 在 B561 上恒为 false —— 而 host 的 `darkMode` 之前根本没传进来。
+     * 这条用 [ClusterMapPresentation] 的 `initialNight` 参数守住修复：
+     * 调用方传 true 就必须是黑底白字。
+     */
+    @Test fun aDarkHostGetsABlackWaitingPageWithWhiteText() {
+        withPresentation(night = true) { presentation ->
+            val label: android.widget.TextView = org.robolectric.util.ReflectionHelpers.getField(presentation, "waitingLabel")
+            assertEquals(android.graphics.Color.WHITE, label.currentTextColor)
+            val background = label.background as android.graphics.drawable.ColorDrawable
+            val color = background.color
+            // 黑底：三个通道都低于 32，且完全不透明。
+            assertEquals(255, android.graphics.Color.alpha(color))
+            assertTrue("red=${android.graphics.Color.red(color)}", android.graphics.Color.red(color) < 32)
+            assertTrue("green=${android.graphics.Color.green(color)}", android.graphics.Color.green(color) < 32)
+            assertTrue("blue=${android.graphics.Color.blue(color)}", android.graphics.Color.blue(color) < 32)
+        }
+    }
+
+    /** B561: 夜间切到白天（车机主题跟随环境光变）时等待页要跟着换回浅底深字。 */
+    @Test fun switchingToDayRestoresTheLightWaitingPage() {
+        withPresentation(night = true) { presentation ->
+            val label: android.widget.TextView = org.robolectric.util.ReflectionHelpers.getField(presentation, "waitingLabel")
+            presentation.setNightMode(false)
+            assertEquals(android.graphics.Color.DKGRAY, label.currentTextColor)
+            val background = label.background as android.graphics.drawable.ColorDrawable
+            assertEquals(android.graphics.Color.rgb(233, 238, 246), background.color)
+            presentation.setNightMode(true)
+            assertEquals(android.graphics.Color.WHITE, label.currentTextColor)
+        }
+    }
+
+    /** B561: 幂等 —— 重复设同一个夜色不该把等待页重画（否则会闪）。 */
+    @Test fun settingTheSameNightValueTwiceKeepsTheBackground() {
+        withPresentation(night = true) { presentation ->
+            val root: android.widget.FrameLayout = org.robolectric.util.ReflectionHelpers.getField(presentation, "rootView")
+            val before = root.background
+            presentation.setNightMode(true)
+            assertSame(before, root.background)
+        }
+    }
+
     private fun withMeasuredPresentation(block: (ClusterMapPresentation) -> Unit) {
         val original = android.os.Build.FINGERPRINT
         org.robolectric.shadows.ShadowBuild.setFingerprint(DiLink51ClusterLayout.FINGERPRINT)
-        try { withPresentation(DiLink51ClusterLayout.FULL, DiLink51ClusterLayout.Theme.MAP, block) }
-        finally { org.robolectric.shadows.ShadowBuild.setFingerprint(original) }
+        try {
+            withPresentation(
+                name = DiLink51ClusterLayout.FULL,
+                theme = DiLink51ClusterLayout.Theme.MAP,
+                block = block,
+            )
+        } finally { org.robolectric.shadows.ShadowBuild.setFingerprint(original) }
     }
 
     private fun withPresentation(name: String = DiLink51ClusterLayout.BASE,
         theme: DiLink51ClusterLayout.Theme = DiLink51ClusterLayout.Theme.SCENARIO,
+        night: Boolean = DiLink51ClusterLayout.dark(context, theme),
         block: (ClusterMapPresentation) -> Unit) {
         val id = display(name, "w1920dp-h720dp-mdpi")
-        val presentation = ClusterMapPresentation(context, manager.getDisplay(id), theme) {}
+        val presentation = ClusterMapPresentation(
+            context = context,
+            display = manager.getDisplay(id),
+            theme = theme,
+            onSurface = {},
+            initialNight = night,
+        )
         try { presentation.create(); block(presentation) }
         finally { presentation.dismiss(); ShadowDisplayManager.removeDisplay(id) }
     }
@@ -134,12 +196,40 @@ class ClusterMapPresentationTest {
         }
     }
 
-    @Test fun unrelatedPresentationDisplayIsNotUsedForTheCluster() {
-        val other = display("Passenger display")
+    /**
+     * B561：只有一块副屏时，即使它匹配不上任何比亚迪指纹，也**采用**它。
+     *
+     * 这条与上游"认不出指纹就宁可不画"的取向**故意不同** ——
+     * B561 的仪表是 HDMI 外接屏，屏名/尺寸对不上 `DiLink4ClusterDisplay.matches()`，
+     * 实车日志里它就是 `display=1 name="HDMI 屏幕"`。若坚持指纹匹配，
+     * 实车表现就是"连接成功但仪表无画面"。
+     *
+     * ★ 无歧义是前提：**只有一块**副屏才自动采用。两块以上仍要求用户显式选择，
+     *   否则会把 passenger display 之类误当仪表屏（见下一条）。
+     */
+    @Test fun aSingleSecondaryDisplayIsUsedOnB561EvenWithoutAFingerprint() {
+        val other = display("HDMI 屏幕")
+        try {
+            assertEquals(other, ClusterMapPresentation.findDisplay(context)?.displayId)
+        } finally {
+            ShadowDisplayManager.removeDisplay(other)
+        }
+    }
+
+    /**
+     * ★ 但**多块**副屏且用户没选过时，绝不"挑最大的那块"硬上。
+     *
+     * 认错屏会把导航画到 passenger display 上，比不画更糟 —— 宁缺勿画。
+     * 这条守住 B561 判据的另一半：歧义时保持沉默。
+     */
+    @Test fun ambiguousSecondaryDisplaysAreNotGuessedWithoutAnExplicitChoice() {
+        val a = display("Passenger display")
+        val b = display("HDMI 屏幕", "w1920dp-h720dp-mdpi")
         try {
             assertNull(ClusterMapPresentation.findDisplay(context))
         } finally {
-            ShadowDisplayManager.removeDisplay(other)
+            ShadowDisplayManager.removeDisplay(a)
+            ShadowDisplayManager.removeDisplay(b)
         }
     }
     @Test fun dilink4MeasuredProjectionIsSelected() {
@@ -222,7 +312,7 @@ class ClusterMapPresentationTest {
     @Test fun legacyHolderSurfaceIsReportedAsPhysicalOutputWithoutTakingItsOwnership() {
         val id = display("fission_bg_XDJAScreenProjection")
         val reported = mutableListOf<android.view.Surface?>()
-        val presentation = ClusterMapPresentation(context, manager.getDisplay(id)) { reported += it }
+        val presentation = ClusterMapPresentation(context, manager.getDisplay(id), onSurface = { reported += it })
         val surface = org.mockito.Mockito.mock(android.view.Surface::class.java)
         val holder = org.mockito.Mockito.mock(android.view.SurfaceHolder::class.java)
         org.mockito.Mockito.`when`(holder.surface).thenReturn(surface)

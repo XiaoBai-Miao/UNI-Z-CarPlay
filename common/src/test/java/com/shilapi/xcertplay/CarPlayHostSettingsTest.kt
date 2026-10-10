@@ -486,9 +486,24 @@ class CarPlayHostSettingsTest {
     private fun menu() = field("settingsMenu") as View
     private fun resolutionSlider() = views(menu()).filterIsInstance<SeekBar>()
         .first { it.max == CarPlayDisplayScale.MAX_PERCENT - CarPlayDisplayScale.MIN_PERCENT }
-    private fun gestureButton() = views(menu()).filterIsInstance<Button>()
+    /**
+ * 手势指头数切换入口。
+ *
+ * ★ v69: 同样是左侧目录的操作项（`TextView`），不再是页脚 `Button`。
+ * 文案里有 `%1$d`，所以要用 [String.format] 之外的 `getString(id, arg)` 拼 ——
+ * 这里直接比对该getString 的结果，与 [refreshActionLabel] 写入的一致。
+ */
+    private fun gestureButton() = views(menu()).filterIsInstance<TextView>()
         .first { it.text == activity.getString(R.string.settings_gesture_fingers, field("gestureFingerCount")) }
-    private fun fullSettingsButton() = views(menu()).filterIsInstance<Button>()
+    /**
+     * 「打开 app 设置」入口。
+     *
+     * ★ v69: 它不再是右侧页脚里的 `Button`，而是左侧目录里的**操作项**
+     * （`ConnectedMenuDock.addAction`）—— 一个 `TextView`。所以这里按
+     * `TextView` + 文案匹配，不再 `filterIsInstance<Button>()`。
+     * 底部页脚被整体取消就是为了腾出右侧详情的高度。
+     */
+    private fun fullSettingsButton() = views(menu()).filterIsInstance<TextView>()
         .first { it.text == activity.getString(R.string.app_name) + " " + activity.getString(R.string.settings) }
     private fun views(view: View): Sequence<View> = sequence {
         yield(view)

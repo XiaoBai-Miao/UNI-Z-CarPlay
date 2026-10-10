@@ -22,6 +22,17 @@ object CarPlayGlance {
         val remainingMeters: Long? = null,
         val song: String? = null,
         val playing: Boolean = false,
+        /**
+         * B561: 歌名（未与歌手拼接）。
+         *
+         * [song] 是 `"歌名 — 歌手"` 的单行拼接，给比亚迪仪表用；
+         * 我们的悬浮媒体卡分三行显示，所以要原始的歌名与 [artist]。
+         */
+        val title: String? = null,
+        /** B561: 歌手名。为空表示这次没带歌手，调用方不该画第二行。 */
+        val artist: String? = null,
+        /** B561 v69: 专辑名（iAP2 MediaItemAttributes 字段 6），媒体卡第三行。 */
+        val album: String? = null,
     )
 
     private val route = BydHudRouteState()
@@ -79,6 +90,9 @@ object CarPlayGlance {
             remainingMeters = maneuver?.remainingMeters,
             song = current?.text,
             playing = current?.playing ?: false,
+            title = current?.title,
+            artist = current?.artist,
+            album = current?.album,
         )
         if (next == last) return null
         last = next
