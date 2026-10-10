@@ -177,11 +177,33 @@ internal class ClusterCardPreview(context: Context) : View(context) {
      * 两个分区就都能 `ensureClusterPreview(card)?.addTo(card)`。
      *
      * 宽度 `match(4, 0)`：占满卡片内容宽，高度给 0 让 [onMeasure] 按 8:3 自算。
+     *
+     * ## v73: 默认不再渲染
+     *
+     * 用户要求「设置里去掉卡片预览」。挡在这里而不是删调用点，是因为预览有
+     * **两个**挂载处（仪表分区建实例、音频分区 `ensureClusterPreview(card)?.addTo(card)` 挂载），
+     * 逐个删要改两处且容易漏 —— 漏一处就留下一个孤立的 View。
+     * 在唯一的挂载入口 early-return，两个分区一起干净。
+     *
+     * **滑块全部保留**：位置 / 大小 / 形状仍可调，只是不再画示意图。
+     * 预览的价值是"所见即所得"，但它在 1920×910 上要吃掉一整张卡的高度，
+     * 而这张卡下面就是实际调滑块的地方 —— 挤在一起反而不如直接调。
      */
     fun addTo(card: LinearLayout) {
+        if (!SHOW_CARD_PREVIEW) return
         card.addView(this, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0,
         ))
+    }
+
+    companion object {
+        /**
+         * v73: 是否在设置页渲染仪表卡片缩略图。
+         *
+         * 默认 **false**（用户要求去掉）。改回 true 即恢复 v69 的所见即所得预览；
+         * 几何与形状的持久化、刷新逻辑都原封不动，所以恢复不需要额外改动。
+         */
+        const val SHOW_CARD_PREVIEW = false
     }
 
     /**
