@@ -1,3 +1,16 @@
+> ## ⚠ 这是带车机适配的分支
+>
+> 本仓库是 **[UNI-Z CarPlay](README.UNI-Z.md)** —— DiPlay 0.2.14 的 fork，
+> 适配**长安欧尚 / 比亚迪 B561**所用的 **Renesas R-Car 车机（Android 9 / 1920×910）**。
+>
+> **改动说明与构建方式见 [README.UNI-Z.md](README.UNI-Z.md)**。
+> 以下是上游 DiPlay 官方文档，本分支未做改动。
+>
+> 主要增量：仪表屏投图（四张卡位置独立）、导航语音主驾独占、
+> 车辆数据（电量/续航/车速/挡位）经 VHAL 与 logcat 双路融合回传手机。
+
+---
+
 # DiPlay
 
 为兼容的比亚迪安卓车机提供有线及无线 CarPlay，采用 DiAuto 风格界面。
@@ -28,6 +41,8 @@ Wi-Fi Direct 现支持 Android 9 的旧版建组路径，使用系统返回的�
 2. 打开“**设置 → 诊断 → 保存诊断报告**”。Android 10+ 通常保存到 **Downloads/DiPlay**；Android 9 使用文件选择器，也可点“选择保存位置”。如选择器或公共存储不可用，应用会使用专用外部或私有目录，并在确认中说明目的地。
 3. 使用确认中的**查看报告／分享**；没有分享应用时，可在报告视图中选择并复制文本。检查 `.txt` 并删除隐私信息，再附到匹配的[现有问题](https://github.com/shihabal3amri/DiPlay/issues)，或[新建问题](https://github.com/shihabal3amri/DiPlay/issues/new/choose)。报告不会自动上传，请勿公开热点密码或私有认证文件。
 4. 注明车型／车机、DiLink/Android/完整固件版本、iPhone/iOS、USB／车机热点／Wi-Fi Direct／同一局域网、相关设置、复现步骤、预期与实际结果及故障时间。
+
+**本分支文档**：[UNI-Z CarPlay 适配说明](docs/UNI_Z_ADAPTATION.md) —— 仪表投图、音频路由、车辆数据双路融合的技术细节。
 
 [从源码构建](docs/BUILD.md)：主应用请选择 `mobile` 模块。`maphost` 是地图演示应用，构建步骤和 APK 路径见说明。
 

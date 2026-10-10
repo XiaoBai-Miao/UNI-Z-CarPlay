@@ -1,3 +1,19 @@
+> ## ⚠ This is a fork with vehicle-specific adaptations
+>
+> This repository is **[UNI-Z CarPlay](README.UNI-Z.md)** — a fork of DiPlay 0.2.14
+> adapted for the **Renesas R-Car head unit (Android 9 / 1920x910)** used in the
+> Changan Oushang / BYD B561 vehicles.
+>
+> **Read [README.UNI-Z.md](README.UNI-Z.md)** for what this branch changes and how to build it.
+> The upstream DiPlay documentation below applies to the base version and is kept unmodified.
+>
+> Highlights: instrument-cluster projection with four independently placed cards
+> (turn / media / call / junction), driver-zone-only navigation audio, and
+> vehicle data (battery, range, speed, gear) reported back to the phone by
+> combining VHAL reflection with logcat parsing.
+
+---
+
 # DiPlay
 
 **CarPlay for compatible BYD Android head units.** Wired and wireless, with the familiar DiAuto interface. Independent app: `com.shihab.diplay`.
@@ -45,6 +61,7 @@ If a problem remains, reproduce it on **0.2.14**, then use **Settings → Diagno
 on an external router. See the guide for setup, build requirements and the
 BYD DiLink 4.0 / Android 10 clean-install validation result.
 
+- **[UNI-Z CarPlay adaptation notes](docs/UNI_Z_ADAPTATION.md)** — what this fork changes and why (cluster projection, audio routing, vehicle data)
 - [Install and connect](docs/INSTALL.md)
 - [Compatibility and troubleshooting](docs/COMPATIBILITY.md)
 - [Smooth wireless CarPlay](docs/SMOOTH_WIRELESS.md)
