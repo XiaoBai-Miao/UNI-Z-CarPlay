@@ -640,4 +640,35 @@
     <string name="settings_system_audio_routing_description">Reproduce los sonidos del sistema y del teclado de CarPlay por los altavoces normales en lugar de la zona de navegación, y nunca pausa la música por ellos. Desactívalo para comparar con el comportamiento anterior. Se aplica tras reconectar.</string>
     <string name="cluster_junction_card">Vista del cruce</string>
     <string name="cluster_junction_card_description">Dibuja el cruce inminente y el carril recomendado a partir de la geometría que envía el teléfono. CarPlay nunca envía una imagen, así que DiPlay la dibuja igual que el cuadro de instrumentos de fábrica. Permanece oculto hasta que el teléfono envía datos de carriles.</string>
+
+    <!-- ★ v71: 菜单页副标题 + 手势四态与滑动目标 -->
+
+    <!-- ★ v71: 菜单页副标题 + 手势四态与滑动目标 -->
+    <string name="settings_gesture_disabled_action">Abrir ajustes · deslizar desactivado (toca para cambiar)</string>
+    <string name="settings_gesture_disabled_hint">El gesto de deslizar hacia abajo está desactivado. Abre los ajustes desde la lista de la izquierda.</string>
+    <string name="settings_swipe_target_overlay">Abrir ajustes · menú de la sesión</string>
+    <string name="settings_swipe_target_full">Abrir ajustes · página de ajustes completa</string>
+    <string name="menu_sub_connection">CarPlay inalámbrico, punto de acceso y conexión automática</string>
+    <string name="menu_sub_display">Resolución, frecuencia de imagen, barras del sistema e imagen</string>
+    <string name="menu_sub_navigation">Mapa del salpicadero, tarjeta de giro y guía de carril</string>
+    <string name="menu_sub_vehicle">Teclas del volante y comportamiento del vehículo</string>
+    <string name="menu_sub_audio">Ruteo de medios, navegación y llamadas</string>
+    <string name="menu_sub_quick">Ajustes que se aplican sin reconectar</string>
+
+    <!-- ★ v73: A2DP 断开与「声明无音频输出」。断 A2DP 是事后补救，声明无音频是协商阶段就不建流 —— 两者机制不同，详见 AirPlayPersistence.loadDisableAudioOutput 的对照表 -->
+    <string name="disconnect_a2dp">Desconectar el audio Bluetooth tras conectar</string>
+    <string name="disconnect_a2dp_description">Corta el enlace de música A2DP del salpicadero unos 1,5 s después de que se conecte CarPlay, para que la música Bluetooth del móvil no suene a la vez. Las llamadas y el emparejamiento de CarPlay siguen funcionando. Desactivado por defecto: con más de un iPhone emparejado, DiPlay elegirá el móvil por dirección en lugar de por quién esté escuchando.</string>
+    <string name="disconnect_a2dp_now">Desconectar ahora</string>
+    <string name="disconnect_a2dp_now_description">Ejecuta la desconexión de inmediato en lugar de esperar a la próxima conexión. Útil para comprobar si el audio doble procede del enlace Bluetooth del salpicadero.</string>
+    <string name="disable_audio_output">Declarar sin salida de audio (experimental)</string>
+    <string name="disable_audio_output_description">Comunica al iPhone que este receptor no tiene audio, de modo que nunca crea un flujo de audio. Más limpio que cortar el enlace Bluetooth después, pero se dejan de funcionar las indicaciones de navegación, las llamadas y la música de CarPlay. Requiere reconectar para aplicarse.</string>
+    <string name="car_microphone_label">Micrófono del salpicadero</string>
+    <string name="car_microphone_description">Que el micrófono del coche gestione la entrada de voz. Desactívalo para comparar la ruta cuando los sonidos de Siri salen del auricular del teléfono. Requiere reconectar.</string>
+
+    <!-- ★ v76: 「连接后断开蓝牙」三档 —— 只断 A2DP 时手机仍与车机保持蓝牙连接、铃声照旧从车机出，用户会认为根本没断；连HEADSET 一起断才彻底。见 AirPlayPersistence.BluetoothScope -->
+    <string name="bluetooth_scope_label">Desconectar el Bluetooth del móvil tras conectar</string>
+    <string name="bluetooth_scope_off">Mantenerlo</string>
+    <string name="bluetooth_scope_audio">Cortar solo el audio</string>
+    <string name="bluetooth_scope_full">Cortar audio y llamadas</string>
+    <string name="bluetooth_scope_all">Cortar todos los enlaces Bluetooth</string>
 </resources>

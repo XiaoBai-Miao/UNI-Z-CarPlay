@@ -652,4 +652,35 @@
     <string name="settings_system_audio_routing_description">Системні звуки та звуки клавіатури CarPlay відтворюються через звичайні динаміки, а не через зону навігації, і ніколи не ставлять музику на паузу. Вимкніть, щоб порівняти з попередньою поведінкою. Набуває чинності після перепідключення.</string>
     <string name="cluster_junction_card">Схема перехрестя</string>
     <string name="cluster_junction_card_description">Малює найближчий перехрест і рекомендовану смугу за геометрією, яку надсилає телефон. CarPlay не передає зображень, тому DiPlay малює її так само, як штатна панель приладів. Прихована, доки телефон не надішле дані про смуги.</string>
+
+    <!-- ★ v71: 菜单页副标题 + 手势四态与滑动目标 -->
+
+    <!-- ★ v71: 菜单页副标题 + 手势四态与滑动目标 -->
+    <string name="settings_gesture_disabled_action">Відкрити налаштування · свайп вимкнено (торкніться, щоб змінити)</string>
+    <string name="settings_gesture_disabled_hint">Жест свайпу вниз вимкнено. Відкривайте налаштування зі списку ліворуч.</string>
+    <string name="settings_swipe_target_overlay">Відкрити налаштування · меню поточного сеансу</string>
+    <string name="settings_swipe_target_full">Відкрити налаштування · сторінка повних налаштувань</string>
+    <string name="menu_sub_connection">Бездротовий CarPlay, точка доступу та автоз’єднання</string>
+    <string name="menu_sub_display">Роздільність, частота кадрів, системні панелі та зображення</string>
+    <string name="menu_sub_navigation">Карта панелі приладів, картка повороту та вказівка смуги</string>
+    <string name="menu_sub_vehicle">Кнопки керма та поведінка автомобіля</string>
+    <string name="menu_sub_audio">Маршрутизація медіа, навігації та дзвінків</string>
+    <string name="menu_sub_quick">Налаштування, що застосовуються без перепідключення</string>
+
+    <!-- ★ v73: A2DP 断开与「声明无音频输出」。断 A2DP 是事后补救，声明无音频是协商阶段就不建流 —— 两者机制不同，详见 AirPlayPersistence.loadDisableAudioOutput 的对照表 -->
+    <string name="disconnect_a2dp">Відключати звук Bluetooth після з’єднання</string>
+    <string name="disconnect_a2dp_description">Розриває A2DP-аудіозв’язок автомобіля приблизно через 1,5 с після підключення CarPlay, щоб музика з телефона по Bluetooth не грала одночасно. Дзвінки та сполучення CarPlay продовжують працювати. Типово вимкнено: за кількох спарених iPhone DiPlay обиратиме телефон за адресою, а не за тим, хто слухає.</string>
+    <string name="disconnect_a2dp_now">Відключити зараз</string>
+    <string name="disconnect_a2dp_now_description">Розриває зв’язок одразу, не чекаючи наступного з’єднання. Зручно, щоб перевірити, чи йде подвійний звук через Bluetooth автомобіля.</string>
+    <string name="disable_audio_output">Заявити про відсутність аудіовиходу (експериментально)</string>
+    <string name="disable_audio_output_description">Повідомляє iPhone, що в цього приймача взагалі немає звуку, тому аудіопотік не створюється. Чистіше, ніж розривати Bluetooth після підхоплення, але підказки навігації, дзвінки та музика CarPlay перестануть працювати. Потрібне перепідключення.</string>
+    <string name="car_microphone_label">Мікрофон автомобіля</string>
+    <string name="car_microphone_description">Дай мікрофон автомобіля обробтав голосовій ввід. Вимкніть для порівнення. Потрібнує перепідключення.</string>
+
+    <!-- ★ v76: 「连接后断开蓝牙」三档 —— 只断 A2DP 时手机仍与车机保持蓝牙连接、铃声照旧从车机出，用户会认为根本没断；连HEADSET 一起断才彻底。见 AirPlayPersistence.BluetoothScope -->
+    <string name="bluetooth_scope_label">Відключати Bluetooth телефона після з’єднання</string>
+    <string name="bluetooth_scope_off">Залишити</string>
+    <string name="bluetooth_scope_audio">Відключити лише звук</string>
+    <string name="bluetooth_scope_full">Відключити звук і дзвінки</string>
+    <string name="bluetooth_scope_all">Відключити всі Bluetooth-з’єднання</string>
 </resources>

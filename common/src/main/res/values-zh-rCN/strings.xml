@@ -734,4 +734,38 @@
     <string name="settings_system_audio_routing_description">把 CarPlay 的系统提示音、键盘声改走普通喇叭，而不是导航专声区，并且不会因此暂停音乐。关闭可与改动前的效果做对比。需重连后生效。</string>
     <string name="cluster_junction_card">路口放大图</string>
     <string name="cluster_junction_card_description">用 iPhone 下发的路口几何与车道数据画出前方路口和推荐车道。CarPlay 本身不发图片，所以由 DiPlay 自行渲染（与原厂仪表同一思路）。没有车道数据时整块不显示。</string>
+
+    <!-- ★ v71: 菜单页副标题 + 手势四态与滑动目标 -->
+
+    <!-- ★ v71: 菜单页副标题 + 手势四态与滑动目标 -->
+    <string name="settings_gesture_disabled_action">打开设置 · 下滑已关闭（点按切换）</string>
+    <string name="settings_gesture_disabled_hint">下滑手势已关闭，请从左侧目录打开设置。</string>
+    <string name="settings_swipe_target_overlay">打开设置 · 会话内菜单</string>
+    <string name="settings_swipe_target_full">打开设置 · 完整设置页</string>
+    <string name="menu_sub_connection">无线 CarPlay、热点与自动连接</string>
+    <string name="menu_sub_display">分辨率、帧率、系统栏与画面</string>
+    <string name="menu_sub_navigation">仪表地图、转向卡与车道指引</string>
+    <string name="menu_sub_vehicle">方向盘按键与车辆侧行为</string>
+    <string name="menu_sub_audio">媒体、导航与通话路由</string>
+    <string name="menu_sub_quick">无需重连即可生效的设置</string>
+
+    <!-- ★ v73: A2DP 断开与「声明无音频输出」。断 A2DP 是事后补救，声明无音频是协商阶段就不建流 —— 两者机制不同，详见 AirPlayPersistence.loadDisableAudioOutput 的对照表 -->
+    <string name="disconnect_a2dp">连接后断开蓝牙音频</string>
+    <string name="disconnect_a2dp_description">CarPlay 连上约 1.5 秒后断开车机侧A2DP 音乐链路，避免手机蓝牙音乐同时播放。通话与 CarPlay 配对不受影响。默认关闭：多台已配对 iPhone 时，DiPlay 会按地址而非按“谁在听”来选设备。</string>
+    <string name="disconnect_a2dp_now">立即断开</string>
+    <string name="disconnect_a2dp_now_description">不等下次连接，立刻执行断开。用来确认双路音频是否来自车机蓝牙链路。</string>
+    <string name="disable_audio_output">声明无音频输出（实验性）</string>
+    <string name="disable_audio_output_description">告诉 iPhone 本接收端完全没有音频，iPhone 就不会建立音频流。比事后断蓝牙更干净，但 CarPlay 的导航提示、通话与音乐会全部失效。需要重新连接才生效。</string>
+    <string name="car_microphone_label">车机麦克风</string>
+    <string name="car_microphone_description">让车机麦克风处理语音输入。关掉可用于对比：Siri 提示音从手机听筒播放时看路由差异。需重连生效。</string>
+
+    <!-- ★ v76: 「连接后断开蓝牙」三档 —— 只断 A2DP 时手机仍与车机保持蓝牙连接、铃声照旧从车机出，用户会认为根本没断；连HEADSET 一起断才彻底。见 AirPlayPersistence.BluetoothScope -->
+    <string name="bluetooth_scope_label">连接后断开手机蓝牙</string>
+    <string name="bluetooth_scope_off">保持连接</string>
+    <string name="bluetooth_scope_audio">只断音频</string>
+    <string name="bluetooth_scope_full">断音频与通话</string>
+    <string name="bluetooth_scope_all">彻底断开所有蓝牙链路</string>
+    <string name="quick_group_display">显示</string>
+    <string name="quick_group_media_card">媒体卡外观</string>
+    <string name="quick_group_centre_screen">中控屏</string>
 </resources>

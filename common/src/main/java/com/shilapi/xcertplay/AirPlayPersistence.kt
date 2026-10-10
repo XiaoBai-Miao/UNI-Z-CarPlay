@@ -75,6 +75,66 @@ object AirPlayPersistence {
     private const val KEY_MAIN_BUFFERED_AUDIO = "main_buffered_audio"
     private const val KEY_CALL_ECHO_CANCELLATION = "call_echo_cancellation"
     private const val KEY_CALL_VOICE_FILTER = "call_voice_filter"
+    private const val KEY_DISCONNECT_A2DP = "disconnect_a2dp"
+
+    /** v73: /info 声明"无音频输出"，见 [loadDisableAudioOutput]。 */
+    private const val KEY_DISABLE_AUDIO_OUTPUT = "disable_audio_output"
+
+    /** v76: 蓝牙断开范围，见 [BluetoothScope]。 */
+    private const val KEY_BLUETOOTH_SCOPE = "bluetooth_scope"
+
+    /**
+     * ★ v78: 是否**不使用**车机麦克风。
+     *
+     * 默认 false = 用车机麦克风（与改动前行为一致，不破坏现有用户）。
+     *
+     * [AirPlayConfig.microphone] 上报 false 时，`/info` 的 `audioFormats` 不带
+     * `audioInputFormats`（见 `AirPlayInfoPlist.audioFormats`），iPhone 就不会把
+     * 语音输入的采集请求交给车机 —— 反过来可用于现场对比验证。
+     */
+    private const val KEY_DISABLE_MICROPHONE = "disable_microphone"
+
+    /**
+     * ★ v76: 会话建立后断开手机蓝牙的范围。
+     *
+     * | 值 | 含义 | 适合|
+     * |---|---|---|
+     * | [OFF] | 不断（默认） | 蓝牙链路正常、只想留CarPlay 音频 |
+     * | [AUDIO] | 断 A2DP（音乐） | 手机蓝牙音乐与导航双焦点 |
+     * | [FULL] | 断 A2DP + HEADSET（通话） | 手机铃声/通话仍从车机出，双焦点最严重 |
+     * | [ALL] | 断**所有**已建立链路 | 要「手机与车机蓝牙彻底断开」的体感 |
+     *
+     * ## [ALL] 与 [FULL] 的区别（用户要的「彻底断开」）
+     *
+     * [FULL] 只按名单断 A2DP + HEADSET，名单外的 profile（AVRCP、厂商私有等）
+     * 会留着。而 [ALL] 不问 profile 名单，只问「现在有哪些设备连着」，
+     * 对每台调 `BluetoothDevice.disconnect()` 断其全部链路 ——
+     * 不受 profile id 的 ROM 差异影响。
+     *
+     * ## 三者都**不动**适配器与配对关系
+     *
+     * `BluetoothAdapter.disable()` 会连 iAP2 配对与重连一起断，车机拉不起会话；
+     * `removeBond()` 会让手机「忘记」这台车机。所以两样都不做 ——
+     * 只断已建立的连接，配对保留，下次 CarPlay 仍能自动重连。
+     *
+     * ## 为什么 [FULL]/[ALL] 不是推荐档
+     *
+     * 断 HEADSET 后手机的**来电**在车机上就没声音了（只剩 CarPlay 自己的通话）。
+     * 只在确实被双焦点困扰时才用。
+     */
+    enum class BluetoothScope { OFF, AUDIO, FULL, ALL }
+
+    fun loadBluetoothScope(context: Context): BluetoothScope {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_BLUETOOTH_SCOPE, null) ?: return BluetoothScope.OFF
+        // 存枚举名而非下标：下标顺序一变，用户的设置就静默错位了。
+        return runCatching { BluetoothScope.valueOf(raw) }.getOrDefault(BluetoothScope.OFF)
+    }
+
+    fun saveBluetoothScope(context: Context, scope: BluetoothScope) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_BLUETOOTH_SCOPE, scope.name).apply()
+    }
     private const val KEY_SMOOTH_VIDEO = "smooth_video"
     private const val KEY_CLUSTER_MAP = "cluster_map_enabled"
     private const val KEY_ADB_CLUSTER_ACTIVITY = "adb_cluster_activity_enabled"
@@ -91,6 +151,9 @@ object AirPlayPersistence {
     private const val KEY_CLUSTER_TURN_CARD_OVERLAY_Y = "cluster_turn_card_overlay_y_percent"
     private const val KEY_CENTER_MAP_FOLLOWS_DASHBOARD = "center_map_follows_dashboard"
     private const val KEY_SETTINGS_GESTURE_FINGERS = "settings_gesture_fingers"
+
+    /** v71: 下滑打开独立菜单（false）还是启动页完整设置（true）。 */
+    private const val KEY_SWIPE_OPENS_FULL_SETTINGS = "swipe_opens_full_settings"
     private const val KEY_WIDTH_PHYSICAL_MM = "display_width_physical_mm"
     private const val KEY_PHYSICAL_SIZE_BASIS = "display_physical_size_basis"
     private const val KEY_MAX_DETECTED_WIDTH = "display_max_detected_width"
@@ -892,6 +955,94 @@ object AirPlayPersistence {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_CALL_VOICE_FILTER, enabled).apply()
     }
 
+    /**
+     * ★ B561 v70: 会话建立后是否自动断开**车机侧**的 A2DP 音频。
+     *
+     * 默认**关闭** —— 上游 DiPlay 没有这个行为，而它会让
+     * `CarPlayController.selectWirelessBluetoothDevices()` 的"优先选正连着 A2DP 的
+     * iPhone"排序退化到按地址排。多台已配对 iPhone 的车机上可能挑错设备，
+     * 所以宁可让用户自己开。
+     */
+    fun loadDisconnectA2dp(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_DISCONNECT_A2DP, false)
+
+    fun saveDisconnectA2dp(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_DISCONNECT_A2DP, enabled).apply()
+    }
+
+    /**
+     * v76: 旧布尔开关 → 新枚举的一次性迁移。
+     *
+     * 早期版本只有一个 `disconnect_a2dp` 布尔（= 新的 [BluetoothScope.AUDIO]）。
+     * 直接换成枚举的话，升级后**所有已开的用户都会被重置成 OFF** ——
+     * 设置静默丢失是最难查的一类问题。这里读一次旧的写新的，之后只用枚举。
+     *
+     * 注意顺序：新枚举优先，只有它**从未被写过**时才回退看旧布尔，
+     * 否则用户在新 UI 关掉开关后，下次启动会被旧布尔"复活"。
+     */
+    fun loadBluetoothScopeMigrated(context: Context): AirPlayPersistence.BluetoothScope {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_BLUETOOTH_SCOPE, null)
+        if (saved != null) return runCatching { AirPlayPersistence.BluetoothScope.valueOf(saved) }
+            .getOrDefault(AirPlayPersistence.BluetoothScope.OFF)
+        val legacy = if (prefs.contains(KEY_DISCONNECT_A2DP)) {
+            prefs.getBoolean(KEY_DISCONNECT_A2DP, false)
+        } else false
+        val scope = if (legacy) AirPlayPersistence.BluetoothScope.AUDIO else AirPlayPersistence.BluetoothScope.OFF
+        saveBluetoothScope(context, scope)
+        return scope
+    }
+
+    /**
+     * ★ v73: 是否向 iPhone**声明"本接收端没有音频输出"**。
+     *
+     * ## 与 [loadDisconnectA2dp] 的分工（两个都叫"断蓝牙"，机制完全不同）
+     *
+     * | | 机制 | 时机 | 效果 |
+     * |---|---|---|---|
+     * | [loadDisconnectA2dp] | `BluetoothA2dp.disconnect()`反射调用 | 会话建立后 1.5s | 断掉**已经在放的手机音乐**，CarPlay 音频照旧 |
+     * | 本项 | `/info` 的 features 清音频位 + 不发 audioFormats | **协商阶段，早于任何流** | iPhone 压根不建音频流 |
+     *
+     * 为什么需要后者：反射断 A2DP 是**事后补救** —— 音频已经起来过了，
+     * 车机 HAL 已经把流接过来了，断的瞬间仍可能有爆音/焦点抖动，
+     * 且有些车机会自动重连 A2DP。声明式则是"一开始就说没有"，
+     * 干净一个量级（DiPlay-CN PR #432 的结论）。
+     *
+     * ## 代价 —— 这是整车音频架构变更，不是小开关
+     *
+     * 打开后 **CarPlay 完全没有音频**：导航提示音、通话、音乐全没有。
+     * 上游 [com.shilapi.xcertplay.airplay.AirPlayConfig.disableAudioOutput] 与
+     * [AirPlayInfoPlist] 早已把整条实现写好（features 位+ 跳过 audioFormats/
+     * audioLatencies + `bufferedAudioOutputEnabled`联动），但**从未接线**，
+     * 没有任何 UI 能设置它 —— 这里补上接线。
+     *
+     * 默认 false：绝大多数车机还是要 CarPlay 音频的。
+     */
+    fun loadDisableAudioOutput(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_DISABLE_AUDIO_OUTPUT, false)
+
+    fun saveDisableAudioOutput(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_DISABLE_AUDIO_OUTPUT, enabled).apply()
+    }
+
+    /**
+     * ★ v78: 是否**不使用**车机麦克风。默认 false（用车机麦克风）。
+     *
+     * 注意与 [loadDisableAudioOutput] 相反的极性 —— 这个 key 存在是因为
+     * `RECORD_AUDIO` 权限缺失时 `AirPlayConfig.microphone` 会自动变 false，
+     * 需要一个**显式**开关才能在有权限时也强制关掉（用于现场对比验证）。
+     */
+    fun loadDisableMicrophone(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_DISABLE_MICROPHONE, false)
+
+    fun saveDisableMicrophone(context: Context, disabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_DISABLE_MICROPHONE, disabled).apply()
+    }
+
     fun saveFps(context: Context, fps: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putInt(KEY_FPS, AirPlayDisplaySettings.sanitizeFps(fps))
@@ -1017,11 +1168,34 @@ object AirPlayPersistence {
     /** Fingers for the swipe-down that opens settings; some head units reserve three. */
     fun loadSettingsGestureFingers(context: Context): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getInt(KEY_SETTINGS_GESTURE_FINGERS, 3).coerceIn(2, 4)
+            .getInt(KEY_SETTINGS_GESTURE_FINGERS, 3)
+            // ★ v71: 0 是合法值 —— "关闭下滑手势"。很多车机的多指下滑已被自家
+            //   面板占用（比亚迪三指=空调面板），保留一个明确的关闭档，
+            //   比让用户反复试 2/3/4 却始终不生效要好。抄 DiPlay-CN 的四态循环。
+            .let { if (it == 0) 0 else it.coerceIn(2, 4) }
 
     fun saveSettingsGestureFingers(context: Context, fingers: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putInt(KEY_SETTINGS_GESTURE_FINGERS, fingers.coerceIn(2, 4)).apply()
+            .putInt(KEY_SETTINGS_GESTURE_FINGERS, if (fingers == 0) 0 else fingers.coerceIn(2, 4))
+            .apply()
+    }
+
+    /**
+     * ★ v71: 下滑手势打开哪一套设置。
+     *
+     * false = 连接后独立菜单（本菜单，项都是免重连的）
+     * true  = 启动页的完整设置（改名 / 转向卡 / 小屏 / 更新…）
+     *
+     * 默认 false：独立菜单才是滑动手势存在的意义 —— 滑一下就改最常用的一批。
+     * 要改那些**必须退出连接才生效**的项时才切到 true。
+     */
+    fun loadSwipeOpensFullSettings(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SWIPE_OPENS_FULL_SETTINGS, false)
+
+    fun saveSwipeOpensFullSettings(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_SWIPE_OPENS_FULL_SETTINGS, value).apply()
     }
 
     fun loadCenterMapFollowsDashboard(context: Context): Boolean =

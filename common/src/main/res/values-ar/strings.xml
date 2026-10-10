@@ -640,4 +640,35 @@
     <string name="settings_system_audio_routing_description">تشغّل أصوات النظام ولوحة المفاتيح في CarPlay عبر المكبرات العادية بدل منطقة مكبر الملاحة، ولا توقف الموسيقى لأجلها. أوقف هذا الخيار للمقارنة بالسلوك السابق. يسري بعد إعادة الاتصال.</string>
     <string name="cluster_junction_card">عرض التقاطع</string>
     <string name="cluster_junction_card_description">يرسم التقاطع القادم والمسار الموصى به من الهندسة التي يرسلها الهاتف. لا يرسل CarPlay أي صورة، لذا يرسمها DiPlay كما تفعل لوحة العدادات الأصلية. يبقى مخفيًا حتى يرسل الهاتف بيانات المسارات.</string>
+
+    <!-- ★ v71: 菜单页副标题 + 手势四态与滑动目标 -->
+
+    <!-- ★ v71: 菜单页副标题 + 手势四态与滑动目标 -->
+    <string name="settings_gesture_disabled_action">فتح الإعدادات · السحب معطّل (انقر للتبديل)</string>
+    <string name="settings_gesture_disabled_hint">إيماءة السحب لأسفل معطّلة. افتح الإعدادات من القائمة على اليسار بدلًا من ذلك.</string>
+    <string name="settings_swipe_target_overlay">فتح الإعدادات · قائمة داخل الجلسة</string>
+    <string name="settings_swipe_target_full">فتح الإعدادات · صفحة الإعدادات الكاملة</string>
+    <string name="menu_sub_connection">CarPlay اللاسلكي ونقطة الاتصال التلقائي</string>
+    <string name="menu_sub_display">الدقة ومعدل الإطارات وأشرطة النظام والصورة</string>
+    <string name="menu_sub_navigation">خريطة لوحة القيادة وبطاقة الانعطاف وإرشاد المسار</string>
+    <string name="menu_sub_vehicle">مفاتيح عجلة القيادة وسلوك المركبة</string>
+    <string name="menu_sub_audio">توجيه الوسائط والملاحة والمكالمات</string>
+    <string name="menu_sub_quick">إعدادات تُطبّق دون إعادة الاتصال</string>
+
+    <!-- ★ v73: A2DP 断开与「声明无音频输出」。断 A2DP 是事后补救，声明无音频是协商阶段就不建流 —— 两者机制不同，详见 AirPlayPersistence.loadDisableAudioOutput 的对照表 -->
+    <string name="disconnect_a2dp">اقطع صوت البلوتوث بعد الاتصال</string>
+    <string name="disconnect_a2dp_description">يقطع رابط الموسيقي A2DP الخاص بالرادي لأفانك بعد تمتد CarPlay بعدة ثانية حتى لا تتعاول الموسيقي عبر هاتف البلوتوث معاً. يواصل المكالمات وإقران CarPlay بالعمل. معهّل الافتراض: عند الإيفون المربوط أكثر من جهازة.</string>
+    <string name="disconnect_a2dp_now">اقطع الآن</string>
+    <string name="disconnect_a2dp_now_description">ينفِذ الاقطع فوراً بدلاً انتظار الاتصال القادم. استخدمه لللتحقق من أن الصوت مرتبً هو رابط البلوتوث الذي يقول مرتين الصوت.</string>
+    <string name="disable_audio_output">إعلان أنه لا يوجد صوتاً (تجريبي)</string>
+    <string name="disable_audio_output_description">أخبر للاحصان أن هذا المستقبل لا يُقدم صوتاً عنداً، فلا ينشئ أي مشبك صوتاً معفاً. أنقى من قطع رابط البلوتوث لاحقاً، لكن إشعارات التوجيه والمكالمات والموسيقى ستتوففً جميعاً. يتطلب إعادة الاتصال من جديد.</string>
+    <string name="car_microphone_label">ميكروفون السيارة</string>
+    <string name="car_microphone_description">اجعل ميكروفون السيارة للتَقيم الصوتي. أطفه للمقارنة عند انتقال الصوت.</string>
+
+    <!-- ★ v76: 「连接后断开蓝牙」三档 —— 只断 A2DP 时手机仍与车机保持蓝牙连接、铃声照旧从车机出，用户会认为根本没断；连HEADSET 一起断才彻底。见 AirPlayPersistence.BluetoothScope -->
+    <string name="bluetooth_scope_label">اقطاع بلوتوث الهاتف بعد الاتصال</string>
+    <string name="bluetooth_scope_off">إبقاء مُفتح</string>
+    <string name="bluetooth_scope_audio">اقطاع الصوت فقط</string>
+    <string name="bluetooth_scope_full">اقطاع الصوت والمكالمات</string>
+    <string name="bluetooth_scope_all">اقطاع كل روابط البلوتوث</string>
 </resources>

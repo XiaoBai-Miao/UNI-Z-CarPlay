@@ -68,6 +68,7 @@ import com.shilapi.xcertplay.airplay.AirPlayDisplayConfig
 import com.shilapi.xcertplay.airplay.AirPlayIdentity
 import com.shilapi.xcertplay.airplay.AirPlayIcon
 import com.shilapi.xcertplay.airplay.CarPlayClusterDisplay
+import com.shilapi.xcertplay.airplay.ClusterTurnCardOverlay
 import com.shilapi.xcertplay.airplay.AirPlaySafeArea
 import com.shilapi.xcertplay.airplay.AirPlaySession
 import com.shilapi.xcertplay.airplay.AirPlaySessionListener
@@ -479,6 +480,18 @@ class CarPlayHostActivity : ComponentActivity() {
     private var reconnectScheduled = false
     private var sessionLog: SessionLogFile? = null
     private var gestureFingerCount = 3
+
+    /**
+     * ★ v71: 下滑手势打开哪一套设置。
+     *
+     * false = 连接后独立菜单（本菜单，免重连的那批项）
+     * true  = 启动页的完整设置（改名 / 转向卡 / 小屏 / 更新…）
+     *
+     * 为什么要两个入口：连接状态下用户有时要改的是**必须退出连接才生效**的项，
+     * 把它们混进免重连菜单会让人以为保存后立刻生效。分开放最省事。
+     * 抄 DiPlay-CN 的 0.2.12-cn.9（cn.13 补了提示文案）。
+     */
+    private var swipeOpensFullSettings = false
     private var settingsGestureHint: TextView? = null
     private var gestureSequenceActive = false
     private var gestureTracking = false
@@ -671,6 +684,7 @@ class CarPlayHostActivity : ComponentActivity() {
             nightSchedule,
         )
         gestureFingerCount = AirPlayPersistence.loadSettingsGestureFingers(this)
+        swipeOpensFullSettings = AirPlayPersistence.loadSwipeOpensFullSettings(this)
         displayScalePercent = AirPlayPersistence.loadDisplayScalePercent(this)
         displayScaleTenths = CarPlayDisplayScale.sanitize((displayScalePercent + 5) / 10)
         // Size is now chosen only through CarPlaySize; ignore the canvas scale older builds stored.
@@ -969,8 +983,11 @@ class CarPlayHostActivity : ComponentActivity() {
             clusterMonitor?.stop()
             clusterMonitor = null
         }
-        if (!menuOpen) gestureFingerCount = AirPlayPersistence.loadSettingsGestureFingers(this)
-        settingsGestureHint?.text = getString(R.string.open_diplay_settings_hint, gestureFingerCount)
+        if (!menuOpen) {
+            gestureFingerCount = AirPlayPersistence.loadSettingsGestureFingers(this)
+            swipeOpensFullSettings = AirPlayPersistence.loadSwipeOpensFullSettings(this)
+        }
+        settingsGestureHint?.text = gestureHintText()
         ensureClusterPresentation()
         AirPlayPersistence.overlaySettingsListener = { runOnUiThread { applyClusterTurnOverlay() } }
         com.shilapi.xcertplay.hud.BydNavigationOutputs.setTurnOverlayListener(clusterTurnOverlayListener)
@@ -1832,8 +1849,11 @@ class CarPlayHostActivity : ComponentActivity() {
             setBackgroundColor(Color.BLACK)
             isClickable = true
         }
+        // ★ v71: 菜单配色改由 ConnectedMenuPalette 统一供给，
+        //   这里先用夜间值兜底（真值在 dock 构造时按 darkMode 取）。
+        val palette = ConnectedMenuPalette.of(darkMode)
         val panel = FrameLayout(this).apply {
-            setBackgroundColor(MENU_BACKGROUND)
+            setBackgroundColor(palette.background)
         }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1850,25 +1870,56 @@ class CarPlayHostActivity : ComponentActivity() {
             context = this,
             dockWidthDp = CONNECTED_MENU_DOCK_WIDTH_DP,
             bodySizeSp = 18f,
-            captionSizeSp = 15f,
-            selectedColor = MENU_DOCK_SELECTED,
-            dividerColor = MENU_DOCK_DIVIDER,
-            accentColor = MENU_ACCENT,
-            dangerTextColor = MENU_DANGER,
+            captionSizeSp = 13f,
+            // ★ v71: 昼夜两套皮肤取代 v70 的散装 MENU_*常量。
+            //   darkMode 是权威的昼夜判定（夜间模式控制器 / 环境光都在维护它），
+            //   不看系统 uiMode —— 车机常年报 UI_MODE_NIGHT_UNDEFINED。
+            palette = ConnectedMenuPalette.of(darkMode),
             minTouchDp = CONNECTED_MENU_MIN_TOUCH_DP,
             textFactory = { t, size, color, bold -> menuText(t, size, color, bold = bold) },
         )
-        // 五 个分类。key 与下面的 settingsCategoryHeader 一一对应。
-        dock.addSection(KEY_MENU_CONNECTION, getString(R.string.connection)) {}
-        dock.addSection(KEY_MENU_DISPLAY, getString(R.string.settings_display)) {}
-        dock.addSection(KEY_MENU_NAVIGATION, getString(R.string.settings_navigation)) {}
-        dock.addSection(KEY_MENU_VEHICLE, getString(R.string.settings_vehicle)) {}
-        dock.addSection(KEY_MENU_AUDIO, getString(R.string.audio)) {}
+        // 六个分类。key 与下面的 settingsCategoryHeader 一一对应。
+        // ★ v71: 每项多传 subtitle —— 页大标题下的副标题，
+        //   卡片化之后目录在窄窗口会折叠，没有副标题就看不出在哪一页。
+        dock.addSection(
+            KEY_MENU_CONNECTION,
+            getString(R.string.connection),
+            subtitle = getString(MENU_SUB_CONNECTION),
+        ) {}
+        dock.addSection(
+            KEY_MENU_DISPLAY,
+            getString(R.string.settings_display),
+            getString(MENU_GROUP_DISPLAY),
+            getString(MENU_SUB_DISPLAY),
+        ) {}
+        dock.addSection(
+            KEY_MENU_NAVIGATION,
+            getString(R.string.settings_navigation),
+            getString(MENU_GROUP_NAVIGATION),
+            getString(MENU_SUB_NAVIGATION),
+        ) {}
+        dock.addSection(
+            KEY_MENU_VEHICLE,
+            getString(R.string.settings_vehicle),
+            getString(MENU_GROUP_NAVIGATION),
+            getString(MENU_SUB_VEHICLE),
+        ) {}
+        dock.addSection(
+            KEY_MENU_AUDIO,
+            getString(R.string.audio),
+            getString(MENU_GROUP_AUDIO),
+            getString(MENU_SUB_AUDIO),
+        ) {}
         // ★ v69: 新增「常用」分区 —— 把设置页里**不需要重连**的那批项
         //   复制一份到双指下滑菜单。连着 CarPlay 时用户最想调的就是这几项，
-        //   而原来它们只在 app 设置页里，得先退出连接才能改。
+        //   而原来它们只在app 设置页里，得先退出连接才能改。
         //   全部按「显示 / 仪表 / 音频与通话 / 系统」分类，见 buildQuickSettingsSection。
-        dock.addSection(KEY_MENU_QUICK, getString(R.string.quick_settings)) {}
+        dock.addSection(
+            KEY_MENU_QUICK,
+            getString(R.string.quick_settings),
+            getString(MENU_GROUP_QUICK),
+            getString(MENU_SUB_QUICK),
+        ) {}
         /** 当前分区；每遇一个 settingsCategoryHeader 就切一次。 */
         var currentMenuSection = KEY_MENU_CONNECTION
         /**
@@ -1886,6 +1937,7 @@ class CarPlayHostActivity : ComponentActivity() {
             dock.addAction(
                 KEY_ACTION_SIDE_PANEL,
                 getString(if (sidePanelShown) R.string.side_panel_full_screen else R.string.side_panel_show),
+                group = getString(MENU_GROUP_DISPLAY),
             ) {
                 cancelSettingsEdits()
                 showSidePanel(!sidePanelShown)
@@ -2273,20 +2325,55 @@ class CarPlayHostActivity : ComponentActivity() {
         //（保存并重连 / 退出应用 / 语言 / 手势 / 打开 app 设置），
         // 在 1920×910 上要吃掉近 300 px，详情区被压得只剩半屏。
         // 现在全部改成左侧目录里的操作项，右侧详情拿到整列高度。
-        dock.addAction(KEY_ACTION_SAVE, getString(R.string.save_and_reconnect), accent = true) {
+        dock.addAction(KEY_ACTION_SAVE, getString(R.string.save_and_reconnect), accent = true, group = getString(MENU_GROUP_ACTION)) {
             saveSettingsAndReconnect()
         }
-        dock.addAction(KEY_ACTION_APP_SETTINGS, "${getString(R.string.app_name)} ${getString(R.string.settings)}") {
+        dock.addAction(
+            KEY_ACTION_APP_SETTINGS,
+            "${getString(R.string.app_name)} ${getString(R.string.settings)}",
+            group = getString(MENU_GROUP_ACTION),
+        ) {
             cancelSettingsEdits()
             showDiPlayHome("settings")
         }
         dock.addAction(
             KEY_ACTION_GESTURE,
-            // 手势按钮原来是循环切指头（2→3→4→2），这里保持同一语义。
-            getString(R.string.settings_gesture_fingers, gestureFingerCount),
+            gestureActionLabel(),
         ) {
-            gestureFingerCount = if (gestureFingerCount >= 4) 2 else gestureFingerCount + 1
-            dock.refreshActionLabel(KEY_ACTION_GESTURE, getString(R.string.settings_gesture_fingers, gestureFingerCount))
+            // ★ v71:2→3→4→关闭→2 四态循环。
+            //   加"关闭"这一档是因为比亚迪等车机的三指下滑已被自家面板占用，
+            //   而四指在部分车机上根本识别不到 —— 与其让用户反复试，
+            //   不如给一个明确的"别用手势，用左侧目录"选项。
+            //   抄 DiPlay-CN 的 0/1→2→3→4→0 循环（cn.3 起）。
+            gestureFingerCount = when (gestureFingerCount) {
+                0, 1 -> 2
+                2 -> 3
+                3 -> 4
+                else -> 0
+            }
+            // ★ v71: **不要**在这里 saveSettingsGestureFingers。
+            //   手势数是**暂存编辑**项，与菜单里其他设置同语义 ——
+            //   要点「保存并重连」才落盘，点关闭要回滚到打开菜单时的值。
+            //   立即写盘会让 cancelSettingsEdits 恢复不回原值
+            //   （openingAndCancellingKeepsTheCurrentControllerAndRestoresControls 守着这条）。
+            //   同步刷新等待页那行"用N 指下滑"的提示 —— 它是纯展示，不涉持久化。
+            settingsGestureHint?.text = gestureHintText()
+            dock.refreshActionLabel(KEY_ACTION_GESTURE, gestureActionLabel())
+            appendLog("Settings swipe fingers=$gestureFingerCount (staged)")
+        }
+        dock.addAction(
+            KEY_ACTION_SWIPE_TARGET,
+            swipeTargetActionLabel(),
+        ) {
+            // ★ v71: 下滑打开哪一套设置 —— 独立菜单（本菜单）/ 启动页完整设置。
+            //   分成两个入口是必要的：连接状态下用户有时要改的是
+            //   "必须退出连接才生效"的那批项（改名、转向卡、小屏、更新），
+            //   硬塞进本菜单会让人以为保存后就能生效。
+            swipeOpensFullSettings = !swipeOpensFullSettings
+            // 同手势数：暂存而非立即写盘，关闭菜单时随其余暂存项一起回滚。
+            // loadPersistedSettings() 会把它读回打开菜单时的值。
+            dock.refreshActionLabel(KEY_ACTION_SWIPE_TARGET, swipeTargetActionLabel())
+            appendLog("Settings swipe target=${if (swipeOpensFullSettings) "full" else "menu"} (staged)")
         }
         dock.addAction(KEY_ACTION_LANGUAGE, getString(R.string.language_app_language)) {
             AppLocale.showPicker(this@CarPlayHostActivity)
@@ -2301,12 +2388,15 @@ class CarPlayHostActivity : ComponentActivity() {
         // 分区内容都已被 addToSection 路由进 dock 的各个容器，全局操作
         // 已改成左侧目录里的 addAction 操作项。标题原本也被当成普通控件
         // 路由了，所以这里另建一个给 dock。
-        val menuTitle = menuText(getString(R.string.carplay_settings), 26f, Color.WHITE, bold = true)
+        val menuTitle = menuText(getString(R.string.carplay_settings), 26f, palette.primaryText, bold = true)
         panel.addView(
             dock.build(
                 titleView = menuTitle,
                 contentPaddingH = dp(28),
                 contentPaddingV = dp(20),
+                // ★ v70: 目录顶部标题条 —— 与右侧详情标题对称，
+                //   打开菜单第一眼就知道自己在哪、这是一份设置。
+                dockHeader = dock.buildDockHeader(getString(R.string.carplay_settings)),
             ),
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -2315,22 +2405,28 @@ class CarPlayHostActivity : ComponentActivity() {
         )
         // 默认停在「连接」——与原先第一个分区一致，不改变用户的第一眼。
         dock.showSection(KEY_MENU_CONNECTION)
+        // ★ v70: 关闭键从方块 "X" 改成**圆形幽灵按钮**，与左侧强调色同一套语言。
+        //   它原本压在目录第一项上面（top 16dp/left 16dp），
+        //   分组标题加进来之后会跟目录标题打架，所以挪到**右侧详情**的右上角 ——
+        //   那里本来就没有固定控件，且离"保存并重连"更远，不会误触。
         panel.addView(
-            Button(this).apply {
-                text = "X"
-                isAllCaps = false
-                textSize = 22f
-                setTextColor(Color.WHITE)
-                backgroundTintList = ColorStateList.valueOf(MENU_TRACK_OFF)
+            TextView(this).apply {
+                text = "✕"
+                textSize = 20f
+                gravity = Gravity.CENTER
+                setTextColor(MENU_SECONDARY)
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(withAlphaOver(MENU_TRACK_OFF, 220))
+                }
                 contentDescription = getString(R.string.discard_changes_and_exit_settings)
-                minWidth = 0
-                minHeight = 0
-                setPadding(0, 0, 0, 0)
+                isClickable = true
+                isFocusable = true
                 setOnClickListener { cancelSettingsEdits() }
             },
-            FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.START).apply {
-                leftMargin = dp(16)
-                topMargin = dp(16)
+            FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END).apply {
+                rightMargin = dp(20)
+                topMargin = dp(14)
             },
         )
         overlay.addView(
@@ -2350,6 +2446,41 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
 
+        // ★ v70: 菜单**避让状态栏与导航栏**。
+        //
+        // 为什么以前会被压住：panel 是 MATCH_PARENT 高度、Gravity.CENTER，
+        // 铺满整个窗口 —— 而窗口是**全屏**的（这个 Activity 自己隐藏系统栏），
+        // 于是状态栏/导航栏那一圈正好落在目录第一项和详情第一行上面。
+        // 表现就是"最上面那行字被时钟和导航键切掉一半"。
+        //
+        // 做法：把systemBars + displayCutout 的 inset 变成 panel 的**margin**，
+        // 而不是 padding —— padding 会把内容挤窄（菜单内容本来就是定宽 1200 px，
+        // 一挤就换行），margin 只把整块面板往里挪，尺寸不变。
+        //
+        // 为什么不在 `viewport`（准备页）那里做：那里已经是padding，
+        // 且菜单是**另一个** View，各管各的互不干扰。
+        ViewCompat.setOnApplyWindowInsetsListener(overlay) { _, insets ->
+            val safe = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            val lp = panel.layoutParams as? FrameLayout.LayoutParams
+            if (lp != null) {
+                //系统栏隐藏时inset 为 0 → margin 归零，菜单自动回到全屏。
+                //   这正是 v69 之后"隐藏状态栏"能无缝工作的原因，不要写死最小值。
+                val changed = lp.leftMargin != safe.left || lp.topMargin != safe.top ||
+                    lp.rightMargin != safe.right || lp.bottomMargin != safe.bottom
+                if (changed) {
+                    lp.leftMargin = safe.left
+                    lp.topMargin = safe.top
+                    lp.rightMargin = safe.right
+                    lp.bottomMargin = safe.bottom
+                    panel.layoutParams = lp
+                }
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(overlay)
+
         resolutionValueView = resolutionValue
         resolutionPreviewView = preview
         this.hotspotStatusView = hotspotStatusView
@@ -2358,8 +2489,122 @@ class CarPlayHostActivity : ComponentActivity() {
         return overlay
     }
 
+    /** v70: 给颜色加alpha（菜单里多处要"半透明底色"，直接Color.argb 不好读）。 */
+    private fun withAlphaOver(color: Int, alpha: Int): Int =
+        Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+
+        /**
+     * ★ v70: 会话建立后按开关断开车机侧 A2DP（缓解双焦点）。
+     *
+     * ## 为什么不在这里直接断
+     *
+     * [BluetoothA2dpDisconnect] 是**阻塞**的 —— `getProfileProxy` 的回调在 binder 线程，
+     * 要等它回来只能 latch 等待。主线程调会直接 ANR。
+     *
+     * ## 为什么要延迟一小会儿
+     *
+     * `onSessionActive` 触发时手机侧可能**还没**把 A2DP 握上（iPhone 的
+     * 音频通道是独立于 iAP2 会话协商的，稍晚几十到几百毫秒）。
+     * 立刻去断很可能扑空 —— `connectedDevices` 还是空，用户看不到任何效果，
+     * 还以为开关没用。所以给 [A2DP_DISCONNECT_DELAY_MILLIS] 的窗口，等音频真正起来再断。
+     *
+     * ## 幂等
+     *
+     * 每次会话只跑一次；没连着 A2DP 时 [BluetoothA2dpDisconnect] 直接返回
+     * `NOTHING_CONNECTED`，不会误报成功。
+     */
+    private fun maybeDisconnectA2dpAfterSession() {
+        // v76: 守卫改读新枚举（内部已含旧布尔的迁移）。OFF = 完全不介入。
+        val scope = AirPlayPersistence.loadBluetoothScopeMigrated(this)
+        if (scope == AirPlayPersistence.BluetoothScope.OFF) return
+        if (isDestroyed || shuttingDown.get()) return
+        val generation = restartGeneration
+        mainHandler.removeCallbacks(a2dpDisconnectTick)
+        mainHandler.postDelayed(a2dpDisconnectTick, A2DP_DISCONNECT_DELAY_MILLIS)
+        appendLog("A2DP: armed auto-disconnect in ${A2DP_DISCONNECT_DELAY_MILLIS}ms (generation=$generation)")
+    }
+
+    /** v76: 当前要断的 profile 集合，按用户选的 [AirPlayPersistence.BluetoothScope] 展开。 */
+    private fun bluetoothProfilesForScope(scope: AirPlayPersistence.BluetoothScope): List<BluetoothA2dpDisconnect.Profile> =
+        when (scope) {
+            AirPlayPersistence.BluetoothScope.OFF -> emptyList()
+            // 只断 A2DP：手机音乐不再与 CarPlay 抢车机喇叭。
+            AirPlayPersistence.BluetoothScope.AUDIO -> listOf(BluetoothA2dpDisconnect.Profile.A2DP)
+            // 连HEADSET 一起断：手机来电/铃声也不再从车机出，双焦点最彻底。
+            AirPlayPersistence.BluetoothScope.FULL ->
+                listOf(BluetoothA2dpDisconnect.Profile.A2DP, BluetoothA2dpDisconnect.Profile.HEADSET)
+            // v77「彻底断开」走的是另一条实现 —— 不按 profile 名单，
+            // 由系统对该设备断全部链路。见 [BluetoothA2dpDisconnect.disconnectAllLinks]。
+            AirPlayPersistence.BluetoothScope.ALL -> emptyList()
+        }
+
+    /**
+     * 真正执行断开的 runnable。可由菜单里的「立即断开蓝牙」操作项直接触发，
+     * 不必等下一次会话 —— 现场调这个开关时最需要的就是"点了马上见效"。
+     *
+     * v76: 按 [AirPlayPersistence.BluetoothScope] 断一个或两个 profile，
+     * 日志带上设备名与 profile 名 —— 车机上"到底断没断"只能从这里判断。
+     */
+    private val a2dpDisconnectTick = Runnable {
+        if (isDestroyed || shuttingDown.get()) return@Runnable
+        val scope = AirPlayPersistence.loadBluetoothScopeMigrated(this)
+        if (scope == AirPlayPersistence.BluetoothScope.OFF) {
+            appendLog("Bluetooth: scope=OFF; nothing to disconnect")
+            return@Runnable
+        }
+        // 后台线程：BluetoothA2dpDisconnect 会阻塞等待 profile 代理。
+        Thread({
+            // v77: ALL 档走「彻底断开」——不按 profile 名单，让系统断该设备全部链路。
+            if (scope == AirPlayPersistence.BluetoothScope.ALL) {
+                BluetoothA2dpDisconnect.disconnectAllLinks(this) { address, ok ->
+                    runOnUiThread {
+                        appendLog("Bluetooth: full link drop ${address} ${if (ok) "requested" else "fallback"}")
+                    }
+                }
+                return@Thread
+            }
+            val profiles = bluetoothProfilesForScope(scope)
+            if (profiles.isEmpty()) {
+                appendLog("Bluetooth: scope=$scope maps to no profile; nothing to do")
+                return@Thread
+            }
+            val connected = profiles.flatMap { profile ->
+                BluetoothA2dpDisconnect.connectedDevices(this, profile)
+                    .map { device -> profile to device }
+            }
+            if (connected.isEmpty()) {
+                runOnUiThread {
+                    appendLog("Bluetooth: no ${profiles.joinToString { it.label }} device connected")
+                }
+                return@Thread
+            }
+            // 先把要断的设备名单打出来 —— 即使后面 disconnect() 全被拒绝，
+            // 这一行也能证明"我们看见了什么"，比事后猜要可靠。
+            runOnUiThread {
+                appendLog(
+                    "Bluetooth: ${connected.size} link(s) to drop — " +
+                        connected.joinToString { "${it.first.label}→${it.second.second ?: it.second.first}" },
+                )
+            }
+            BluetoothA2dpDisconnect.disconnect(this, profiles) { address, profileName, ok ->
+                runOnUiThread {
+                    appendLog("Bluetooth: $profileName disconnect ${address} ${if (ok) "requested" else "refused"}")
+                }
+            }
+        }, "carplay-a2dp-disconnect").start()
+    }
+
+    /** 菜单里的「立即断开蓝牙」操作项。 */
+    private fun disconnectA2dpNow() {
+        cancelSettingsEdits()
+        mainHandler.removeCallbacks(a2dpDisconnectTick)
+        mainHandler.post(a2dpDisconnectTick)
+    }
+
     private fun persistMenuSettings() {
         AirPlayPersistence.saveSettingsGestureFingers(this, gestureFingerCount)
+        // ★ v71: 下滑目标与手势数同为暂存项，在这里一起落盘。
+        AirPlayPersistence.saveSwipeOpensFullSettings(this, swipeOpensFullSettings)
         AirPlayPersistence.saveWirelessEnabled(this, wirelessEnabled)
         AirPlayPersistence.saveMfiTarget(this, mfiTarget)
         AirPlayPersistence.saveMfiI2cPath(this, mfiI2cPath)
@@ -2647,7 +2892,36 @@ class CarPlayHostActivity : ComponentActivity() {
      * 这样切页时"标题 + 内容"一起隐藏，不会出现"标题留着、内容空了"。
      */
     private fun settingsCategoryHeader(title: String): TextView =
-        SettingsWidgets.createCategoryHeader(this, title, SettingsTheme.OVERLAY)
+        SettingsWidgets.createCategoryHeader(this, title, SettingsTheme.OVERLAY).apply {
+            // ★ v71: 打上卡片化标记。ConnectedMenuDock.build() 靠它判断
+            //   "这里要开一张新卡片" —— 于是那 500 多行 addToSection(...) 调用
+            //   一行都不用改就能得到卡片布局。
+            //   踩过的坑：DiPlay-CN 的 cn.7 让调用方各自包卡片，装车即闪退，
+            //   cn.8 回退才恢复。后处理是唯一不引入这种面积的做法。
+            tag = ConnectedMenuDock.CATEGORY_HEADER_TAG
+        }
+
+    /**
+     * ★ v71: 等待页那行"在 CarPlay 界面用N 指下滑"的提示。
+     *
+     * 手势关闭时（0 指）显示"已关闭"而不是"N 指下滑，N=0" ——
+     * 后者读起来像 bug。
+     */
+    private fun gestureHintText(): String =
+        if (gestureFingerCount <= 0) getString(R.string.settings_gesture_disabled_hint)
+        else getString(R.string.open_diplay_settings_hint, gestureFingerCount)
+
+    /** ★ v71: 左侧目录里手势操作项的标题。四态（含"关闭"）。 */
+    private fun gestureActionLabel(): String =
+        if (gestureFingerCount <= 0) getString(R.string.settings_gesture_disabled_action)
+        else getString(R.string.settings_gesture_fingers, gestureFingerCount)
+
+    /** ★ v71: 左侧目录里滑动目标操作项的标题。 */
+    private fun swipeTargetActionLabel(): String =
+        getString(
+            if (swipeOpensFullSettings) R.string.settings_swipe_target_full
+            else R.string.settings_swipe_target_overlay,
+        )
 
     private fun buildLocationReportingSection(): View =
         LinearLayout(this).apply {
@@ -2930,7 +3204,11 @@ class CarPlayHostActivity : ComponentActivity() {
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(24) },
+                ).apply {
+                    // ★ v78: 24 → 14dp。quick settings 要在一屏里塞下几十项，
+                    //   分组间距占掉的高度是纯浪费 —— 标题本身已有 bold + 深色区分。
+                    topMargin = dp(14)
+                },
             )
         }
 
@@ -2940,7 +3218,10 @@ class CarPlayHostActivity : ComponentActivity() {
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(10) },
+                ).apply {
+                    // ★ v78: 10 → 6dp。一页四十多项，每项 4dp 就是一百多dp。
+                    topMargin = dp(6)
+                },
             )
         }
 
@@ -3044,6 +3325,110 @@ class CarPlayHostActivity : ComponentActivity() {
                 updateResolutionMenu()
             },
         )
+        // ★ v70: 仪表内容源（走哪条链路出图）。这是"仪表屏什么都不显示"时
+        //   最该先看的一项，但它一直只在 app 设置页里。
+        //   免重连依据：saveClusterContent 内部会打 overlaySettingsListener，
+        //   宿主那边 applyClusterTurnOverlay() 会重跑（见 AirPlayPersistence:1014）。
+        val clusterContentOptions = CarPlayClusterDisplay.Content.entries
+        add(
+            settingsChoiceRow(
+                label = getString(R.string.cluster_content_source),
+                options = clusterContentOptions.map { it to clusterContentLabel(it) },
+                selected = AirPlayPersistence.loadClusterContent(this),
+            ) { content ->
+                AirPlayPersistence.saveClusterContent(this, content)
+                appendLog("Cluster content source ${content.name}")
+                updateResolutionMenu()
+            },
+        )
+
+        // ── 媒体卡外观 ──────────────────────────────────────────
+        // 这一组全是 v67/v69 刚做完、但只能在 app 设置页里调的东西 ——
+        //   用户在车上看仪表卡最直接的诉求（封面 / 滚动 / 横竖 / 字号），
+        //   却在连着 CarPlay 的菜单里一个都没有。
+        groupHeader(getString(R.string.quick_group_media_card))
+        // 免重连依据：applyClusterTurnOverlay() 每次都重读这几项并推给每张
+        //   presentation（CarPlayHostActivity:1129-1155），save 侧不用额外通知。
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.cluster_media_card_artwork),
+                checked = AirPlayPersistence.loadClusterMediaArtwork(this),
+                description = getString(R.string.quick_media_artwork_hint),
+            ) { checked ->
+                AirPlayPersistence.saveClusterMediaArtwork(this, checked)
+                appendLog("Cluster media artwork ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.cluster_media_scroll_text),
+                checked = AirPlayPersistence.loadClusterMediaScrollText(this),
+                description = getString(R.string.quick_media_scroll_hint),
+            ) { checked ->
+                AirPlayPersistence.saveClusterMediaScrollText(this, checked)
+                appendLog("Cluster media scroll text ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
+        // 排放方向：三选一，直接决定 1:1.35 竖版还是横幅。v69 刚加的，
+        //   但连着连接时想换形状只能退出连接去设置页 —— 这里补上。
+        add(
+            settingsChoiceRow(
+                label = getString(R.string.cluster_media_orientation),
+                options = listOf(
+                    ClusterTurnCardOverlay.CardOrientation.HORIZONTAL to
+                        getString(R.string.cluster_media_orientation_banner),
+                    ClusterTurnCardOverlay.CardOrientation.VERTICAL to
+                        getString(R.string.cluster_media_orientation_vertical),
+                    ClusterTurnCardOverlay.CardOrientation.FREEFORM to
+                        getString(R.string.cluster_media_orientation_free),
+                ),
+                selected = AirPlayPersistence.loadClusterMediaOrientation(this),
+            ) { orientation ->
+                AirPlayPersistence.saveClusterMediaOrientation(this, orientation)
+                appendLog("Cluster media orientation ${orientation.name}")
+                updateResolutionMenu()
+            },
+        )
+
+        // ── 中控屏 ──────────────────────────────────────────────
+        // 中控浮动地图的三个开关。都在 showCenterMap() 里**每次调用重读**，
+        //   所以关掉菜单再打开地图就变了，不需要重连。
+        groupHeader(getString(R.string.quick_group_centre_screen))
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.center_map_card),
+                checked = AirPlayPersistence.loadCenterMapOverlay(this),
+                description = getString(R.string.quick_center_map_overlay_hint),
+            ) { checked ->
+                AirPlayPersistence.saveCenterMapOverlay(this, checked)
+                appendLog("Centre-screen map card ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.center_map_follows_dashboard),
+                checked = AirPlayPersistence.loadCenterMapFollowsDashboard(this),
+                description = getString(R.string.quick_no_reconnect_hint),
+            ) { checked ->
+                AirPlayPersistence.saveCenterMapFollowsDashboard(this, checked)
+                appendLog("Centre map follows dashboard ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.center_map_auto_hide),
+                checked = AirPlayPersistence.loadCenterMapAutoHide(this),
+                description = getString(R.string.quick_no_reconnect_hint),
+            ) { checked ->
+                AirPlayPersistence.saveCenterMapAutoHide(this, checked)
+                appendLog("Centre map auto-hide ${if (checked) "on" else "off"}")
+                updateResolutionMenu()
+            },
+        )
 
         // ── 音频与通话 ──────────────────────────────────────────
         groupHeader(getString(R.string.audio))
@@ -3057,6 +3442,91 @@ class CarPlayHostActivity : ComponentActivity() {
                 //   它只是链路里的一层软件滤波。所以这里只放后者。
                 AirPlayPersistence.saveCallVoiceFilter(this, checked)
                 appendLog("Call voice filter ${if (checked) "on" else "off"}")
+            },
+        )
+        // ★ v76: 「连接后断开蓝牙」——从布尔开关升级成**三档选择**。
+        //
+        //   为什么不是开关：用户真正要的是「断开手机与车的蓝牙」，
+        //   而手机与车之间是**两条**独立链路 ——
+        //   A2DP（音乐/媒体）与 HEADSET（通话/铃声）。只断前者时手机仍与车机
+        //   保持蓝牙连接、铃声照旧从车机出，用户会认为「根本没断」。
+        //   两档不够用（还要能完全关掉这个行为），所以三档。
+        //
+        //   不用 `BluetoothAdapter.disable()` 的理由写在
+        //   AirPlayPersistence.BluetoothScope 的注释里：那会连 iAP2 配对一起断，
+        //   手机断开后车机拉不起会话。
+        //
+        //   免重连判据：读 SharedPreferences，每次会话建立时重读一次。
+        add(
+            settingsChoiceRow(
+                label = getString(R.string.bluetooth_scope_label),
+                options = listOf(
+                    AirPlayPersistence.BluetoothScope.OFF to getString(R.string.bluetooth_scope_off),
+                    AirPlayPersistence.BluetoothScope.AUDIO to getString(R.string.bluetooth_scope_audio),
+                    AirPlayPersistence.BluetoothScope.FULL to getString(R.string.bluetooth_scope_full),
+                    // v77「彻底断开」：不按 profile 名单，断该设备全部已建立链路。
+                    AirPlayPersistence.BluetoothScope.ALL to getString(R.string.bluetooth_scope_all),
+                ),
+                selected = AirPlayPersistence.loadBluetoothScopeMigrated(this),
+            ) { scope ->
+                AirPlayPersistence.saveBluetoothScope(this, scope)
+                appendLog("Bluetooth scope=${scope.name}")
+                // 从 OFF 切到别的档位时立刻断一次 —— 否则用户改完得重连才看到效果，
+                // 分不清是设置没生效还是本来就不该断。切到 OFF 不需要断（已经断过了）。
+                if (scope != AirPlayPersistence.BluetoothScope.OFF) disconnectA2dpNow()
+            },
+        )
+        // 「立即断开」独立操作项：现场调这个功能时最需要"点了马上见效"。
+        //   不用选择器顺带触发 —— 用户可能只想试一次而不改持久设置。
+        add(
+            settingsActionRow(
+                label = getString(R.string.disconnect_a2dp_now),
+                description = getString(R.string.disconnect_a2dp_now_description),
+            ) { disconnectA2dpNow() },
+        )
+        // ★ v73: 「声明无音频输出」—— 与上面的 A2DP 断开是**两套机制**，并存。
+        //   上面那项是事后断 A2DP（音乐还在放的时候补救），
+        //   这项是协商阶段就在 /info 里说"本机没音频"，iPhone 压根不建流。
+        //   后者更干净但代价大（CarPlay 全静音），所以单列一个开关并标实验性。
+        //   两个都开不冲突：既然iPhone 不建音频流，也就没什么A2DP 可断。
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.disable_audio_output),
+                checked = AirPlayPersistence.loadDisableAudioOutput(this),
+                description = getString(R.string.disable_audio_output_description),
+            ) { checked ->
+                AirPlayPersistence.saveDisableAudioOutput(this, checked)
+                appendLog("Declare no audio output ${if (checked) "on" else "off"} — reconnect to apply")
+                // **不**在这里自动重连。这个 Activity 里能重连的入口是
+                // saveSettingsAndReconnect()，它会顺手关掉整个菜单 ——
+                // 而用户在这 toggles 的往往是连着的一批项，让一个开关把菜单收走很突兀。
+                // /info 只在会话建立时发一次，用户点顶部「保存并重连」即可生效。
+            },
+        )
+        // ★ v78: 车机麦克风开关。
+        //
+        //   现场问题：「语音输入时提示音从手机听筒播放」。已用实车日志排除麦克风
+        //   缺失这个假设 —— 连接时 `microphone=true`（权限已授予、audioInputFormats
+        //   照常上报）。真正的线索是语音提示音的 usage 是
+        //   USAGE_VOICE_COMMUNICATION，而我们只对 USAGE_MEDIA 做了路由决策
+        //   （日志里两条 `audio route ... usage=1`），VOICE_COMMUNICATION 那条链
+        //   一次都没进过路由管线。
+        //
+        //   所以这个开关的作用是**现场对比**：关掉后 /info 不带 audioInputFormats，
+        //   能验证 iPhone 在两种声明下的输出路由差异，从而定位到底是谁没接管。
+        add(
+            settingsSwitchRow(
+                label = getString(R.string.car_microphone_label),
+                checked = !AirPlayPersistence.loadDisableMicrophone(this),
+                description = getString(R.string.car_microphone_description),
+            ) { checked ->
+                AirPlayPersistence.saveDisableMicrophone(this, !checked)
+                appendLog("Car microphone ${if (checked) "on" else "off"} — reconnect to apply")
+                appendLog(
+                    "Effective microphone=" +
+                        (microphoneAvailable && checked) +
+                        " (permission=" + microphoneAvailable + ")",
+                )
             },
         )
 
@@ -3107,6 +3577,27 @@ class CarPlayHostActivity : ComponentActivity() {
             CarPlayNightMode.DAY -> R.string.carplay_night_day
             CarPlayNightMode.NIGHT -> R.string.carplay_night_night
             CarPlayNightMode.SCHEDULE -> R.string.carplay_night_schedule
+        },
+    )
+
+    /**
+     * ★ v70: 仪表内容源的本地化标签（[CarPlayClusterDisplay.Content]）。
+     *
+     * 四个值对应四条**完全不同**的出图链路，不是"同一张图换个画法"：
+     * - MAP：整张地图
+     * - TURN_CARD：官方转向卡（无自定义卡）
+     * - INSTRUMENTS：官方仪表图
+     * - MAP_WITH_CUSTOM_CARD：地图 + 自定义三卡（B561 默认）
+     *
+     * 所以标签必须写清"走官方还是走自定义"，否则用户在 4 个 RadioButton
+     * 里看不出区别，只知道"换了但不知道换了什么"。
+     */
+    private fun clusterContentLabel(content: CarPlayClusterDisplay.Content): String = getString(
+        when (content) {
+            CarPlayClusterDisplay.Content.MAP -> R.string.cluster_content_map
+            CarPlayClusterDisplay.Content.TURN_CARD -> R.string.cluster_content_official_turn
+            CarPlayClusterDisplay.Content.INSTRUMENTS -> R.string.cluster_content_official_instruments
+            CarPlayClusterDisplay.Content.MAP_WITH_CUSTOM_CARD -> R.string.cluster_content_map_custom_card
         },
     )
 
@@ -3422,6 +3913,25 @@ class CarPlayHostActivity : ComponentActivity() {
         theme = SettingsTheme.OVERLAY,
         contentDescription = description,
         onChanged = onChanged,
+    ).rowView
+
+    /**
+     * ★ v70: 一次性动作行（标签 + 说明 + 按钮），不是开关。
+     *
+     * 用来做「立即断开蓝牙音频」这类**动作** —— 与 [settingsSwitchRow] 的
+     * **状态**语义严格分开，避免用户分不清"打开=每次都断"和"打开=现在就断"。
+     */
+    private fun settingsActionRow(
+        label: String,
+        description: String,
+        onClick: () -> Unit,
+    ): View = SettingsWidgets.createActionRow(
+        context = this,
+        label = label,
+        description = description,
+        theme = SettingsTheme.OVERLAY,
+        contentDescription = description,
+        onClick = onClick,
     ).rowView
 
     private fun afterTextChanged(onChanged: (String) -> Unit): TextWatcher =
@@ -4049,13 +4559,21 @@ class CarPlayHostActivity : ComponentActivity() {
             cluster = clusterDisplayConfig(),
             rightHandDrive = rightHandDrive,
             hevc = hevcEnabled,
-            microphone = microphoneAvailable,
+            microphone = microphoneAvailable && !AirPlayPersistence.loadDisableMicrophone(this),
             manufacturer = normalizedManufacturer(),
             model = normalizedModel(),
             oemLabel = oemLabel,
             icons = listOf(loadAirPlayIcon()),
             videoInCar = com.shilapi.xcertplay.hud.BydOutputSettings.videoWhileParkedActive(this),
             mainBufferedAudio = AirPlayPersistence.loadMainBufferedAudio(this),
+            // ★ v73: 接线上游遗留的 disableAudioOutput。
+            //   上游把实现写好了（AirPlayInfoPlist 会清 features 的音频位、
+            //   跳过 audioFormats/audioLatencies，bufferedAudioOutputEnabled 也联动），
+            //   但从没有任何 UI 能设置它 —— 一直是个死配置。
+            //   打开后 iPhone 在协商阶段就知道本机没音频，压根不建流，
+            //   比事后反射断 A2DP 干净（见 AirPlayPersistence.loadDisableAudioOutput 注释）。
+            //   需要**重连**才生效：/info 只在会话建立时发一次。
+            disableAudioOutput = AirPlayPersistence.loadDisableAudioOutput(this),
         )
     }
 
@@ -4278,6 +4796,11 @@ class CarPlayHostActivity : ComponentActivity() {
                     reconnectAttempts = 0
                     logThemeState(ThemeModeDiagnostics.Source.SESSION_ACTIVE, resources.configuration)
                     syncAirPlayDarkMode(ThemeModeDiagnostics.Source.SESSION_ACTIVE)
+                    // ★ v70: 会话刚立起来，正是车机蓝牙 A2DP 还在放手机音乐的那一刻 ——
+                    //   两路音频同时走车机就是"双焦点"。这里按开关把它断掉。
+                    //   放在 runOnUiThread 之后但**不能**在这里直接断：
+                    //   BluetoothA2dpDisconnect 是阻塞的（等 profile 代理），主线程调会 ANR。
+                    maybeDisconnectA2dpAfterSession()
                     if (menuOpen) return@runOnUiThread
                     appendLog("AirPlay session active")
                 }
@@ -5181,7 +5704,14 @@ class CarPlayHostActivity : ComponentActivity() {
                 gestureTracking = false
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                if (event.pointerCount == gestureFingerCount && !gestureSequenceActive) {
+                // ★ v71: gestureFingerCount<=0 表示用户关了下滑手势
+                //   （很多车机的N 指下滑被自家面板占了）。此时**完全不介入**，
+                //   触摸原样转给 iPhone —— 不能因为 pointerCount 恰好等于某个值
+                //   就抢走一次序列，那会让 CarPlay 少收到一个 tap。
+                if (gestureFingerCount > 0 &&
+                    event.pointerCount == gestureFingerCount &&
+                    !gestureSequenceActive
+                ) {
                     gestureSequenceActive = true
                     gestureTracking = true
                     gestureStartX = pointerCentroid(event, horizontal = true)
@@ -5217,7 +5747,10 @@ class CarPlayHostActivity : ComponentActivity() {
                 ) {
                     gestureSequenceActive = false
                     gestureTracking = false
-                    openSettingsMenu()
+                    // ★ v71: 下滑目标二选一。默认进本菜单（免重连那批项），
+                    //   切成"完整设置"则走启动页 —— 那里才有改名/转向卡/更新等
+                    //   必须退出连接才生效的项。
+                    if (swipeOpensFullSettings) showDiPlayHome("settings") else openSettingsMenu()
                     return true
                 }
             }
@@ -5448,11 +5981,47 @@ class CarPlayHostActivity : ComponentActivity() {
         const val PROTOCOL_TRACE_PREFIX = "TRACE "
         const val SETTINGS_SWIPE_DISTANCE_DP = 72
         const val SETTINGS_SWIPE_DIRECTION_RATIO = 1.15f
-        const val MAX_SETTINGS_MENU_WIDTH_PX = 1200
+        /**
+         * ★ v70: 会话建立后延迟多久断 A2DP。
+         *
+         * 1500 ms 是权衡值：iPhone 的 A2DP 音频通道独立于 iAP2 会话协商，
+         * 通常在会话立起后几百毫秒内才握上；太早断会扑空（用户看不到效果），
+         * 太晚则双焦点已经响了几秒。现场若仍偏早就调大、偏早就调小。
+         */
+        const val A2DP_DISCONNECT_DELAY_MILLIS = 1_500L
+        /**
+         * ★ v71: 菜单宽度上限从 1200 px 放宽到 1280。
+         *
+         * DiPlay-CN 的 cn.15→cn.2 把双列改回单列，理由是"双列过挤"。
+         * 我们本来是单列，这次跟着放宽是为了抵消卡片化带来的额外缩进
+         * （卡片 padding + 行间距），否则右侧可用宽度会肉眼可见地缩水。
+         */
+        const val MAX_SETTINGS_MENU_WIDTH_PX = 1280
         const val CONNECTED_MENU_DOCK_WIDTH_DP = 200
         const val CONNECTED_MENU_MIN_TOUCH_DP = 56
-        val MENU_DOCK_SELECTED = Color.rgb(127, 205, 154)
-        val MENU_DOCK_DIVIDER = Color.rgb(40, 48, 54)
+
+        /**
+         * ★ v71: 页大标题下的副标题 —— 一句话说明"这一页管什么"。
+         *
+         * 抄 DiPlay-CN 的 hero 布局（cn.15 换皮时加的）。
+         * 没有它的菜单只能靠左侧目录反推自己在哪，而目录在窄窗口下会折叠成横条，
+         * 副标题是唯一始终可见的位置锚点。
+         */
+        private val MENU_SUB_CONNECTION = R.string.menu_sub_connection
+        private val MENU_SUB_DISPLAY = R.string.menu_sub_display
+        private val MENU_SUB_NAVIGATION = R.string.menu_sub_navigation
+        private val MENU_SUB_AUDIO = R.string.menu_sub_audio
+        private val MENU_SUB_QUICK = R.string.menu_sub_quick
+        private val MENU_SUB_VEHICLE = R.string.menu_sub_vehicle
+
+        // ★ v70: 左侧目录的分组标题。11 个条目平铺一列时看不出哪几个是一类，
+        //   所以按"改的是什么"分组。存的是 **string res id** 而不是文案 ——
+        //   目录标题要跟着语言走，写死中文会在英文系统上露馅。
+        private val MENU_GROUP_DISPLAY = R.string.menu_group_display
+        private val MENU_GROUP_NAVIGATION = R.string.menu_group_navigation
+        private val MENU_GROUP_AUDIO = R.string.menu_group_audio
+        private val MENU_GROUP_QUICK = R.string.menu_group_quick
+        private val MENU_GROUP_ACTION = R.string.menu_group_action
 
         // 连接后双指下滑菜单的五个分类（左侧竖排目录项）。
         // 与下面 buildSettingsMenu 里的分区归属一一对应。
@@ -5469,6 +6038,15 @@ class CarPlayHostActivity : ComponentActivity() {
         private const val KEY_ACTION_SAVE = "action_save_reconnect"
         private const val KEY_ACTION_APP_SETTINGS = "action_app_settings"
         private const val KEY_ACTION_GESTURE = "action_gesture"
+
+        /**
+         * ★ v71: 下滑打开独立菜单还是启动页完整设置。
+         *
+         * 独立放在这里而不是塞进「常用」分区的开关：它决定的是**手势本身**的
+         * 行为，改完立刻影响下一次下滑，不需要重连，也没有"保存"的概念 ——
+         * 和「保存并重连」那类项混在设置行里会让人误以为要重连才生效。
+         */
+        private const val KEY_ACTION_SWIPE_TARGET = "action_swipe_target"
         private const val KEY_ACTION_LANGUAGE = "action_language"
         private const val KEY_ACTION_EXIT = "action_exit"
         val MENU_BACKGROUND = Color.rgb(12, 16, 19)

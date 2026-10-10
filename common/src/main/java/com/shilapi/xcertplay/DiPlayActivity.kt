@@ -677,7 +677,7 @@ class DiPlayActivity : ComponentActivity() {
         right.addView(label(getString(R.string.plug_your_iphone_into_a_usb_data_port_allow_carplay_when_y), 14, MUTED).apply { gravity = Gravity.CENTER; setPadding(dp(8), dp(10), dp(8), dp(24)) })
         right.addView(button(getString(R.string.settings), false) { page = "settings"; render() }, matchButton())
         right.addView(label(getString(R.string.make_diplay_feel_right_for_your_car), 14, MUTED).apply { gravity = Gravity.CENTER; setPadding(0, dp(10), 0, dp(24)) })
-        right.addView(label("${getString(R.string.home_public_preview)}${version()}", 12, MUTED).apply { letterSpacing = .08f })
+        right.addView(label(versionLine(), 12, MUTED).apply { letterSpacing = .08f })
         if (wide) {
             // Both rows share column widths. The USB button starts at the wireless
             // card's top edge, independently of hero wrapping or font scaling.
@@ -1772,6 +1772,51 @@ class DiPlayActivity : ComponentActivity() {
             getString(R.string.audio_routing), R.drawable.ic_dp_audio) { card ->
             mediaChannelControl(card)
             navigationChannelControl(card)
+            // ★ v73: 「连接后断开蓝牙」——**必须在启动页也露一个**。
+            //   原来这个开关只在 CarPlay 会话内的快速设置里，而进会话本身要靠
+            //   N指下滑打开菜单 —— 万一菜单打不开（三指被空调面板占用、四指识别不到），
+            //   用户就彻底没法关掉它了。这正是 DiPlay-CN cn.5 的死循环教训，
+            //   他们后来在启动页补了同样的开关。
+            //   注意：这里只放**开关**，不放「立即断开」按钮 —— 后者是诊断动作，
+            //   在没有会话的启动页点了没有意义。
+            // ★ v76: 与会话内菜单是**同一个开关**（同一个 SharedPreferences key），
+            //   两处任一改都会互相反映。
+            //   启动页这份必须存在：会话内菜单要靠 N 指下滑打开，车机的三指可能被
+            //   自家面板占用 —— 那时用户就彻底没法关掉「断开蓝牙」了，
+            //   而这个开关恰恰是为那些车机准备的（DiPlay-CN cn.5 的死循环教训）。
+            choice(card, getString(R.string.bluetooth_scope_label),
+                listOf(
+                    getString(R.string.bluetooth_scope_off),
+                    getString(R.string.bluetooth_scope_audio),
+                    getString(R.string.bluetooth_scope_full),
+                    getString(R.string.bluetooth_scope_all),
+                ),
+                AirPlayPersistence.BluetoothScope.entries.indexOf(
+                    AirPlayPersistence.loadBluetoothScopeMigrated(this),
+                ).coerceAtLeast(0)) {
+                AirPlayPersistence.BluetoothScope.entries.getOrNull(it)?.let { scope ->
+                    AirPlayPersistence.saveBluetoothScope(this, scope)
+                    markReconnectNeeded()
+                }
+            }
+            // ★ v73: 「声明无音频输出」也必须在启动页露一个 —— 与会话内菜单那项
+            //   是同一个开关，两处任一改都会写同一个 SharedPreferences key。
+            //   这项**要**重连：/info 只在会话建立时发一次，改完不重连不生效。
+            toggle(card, getString(R.string.disable_audio_output),
+                getString(R.string.disable_audio_output_description),
+                AirPlayPersistence.loadDisableAudioOutput(this)) {
+                AirPlayPersistence.saveDisableAudioOutput(this, it)
+                markReconnectNeeded()
+            }
+            // ★ v78: 车机麦克风开关。与会话内菜单是**同一个** SharedPreferences key。
+            //   默认开（key 存的是「不用麦克风」，极性与 disable_audio_output 相反）。
+            //   关掉后 /info 不带 audioInputFormats，iPhone 不把语音采集交给车机。
+            toggle(card, getString(R.string.car_microphone_label),
+                getString(R.string.car_microphone_description),
+                !AirPlayPersistence.loadDisableMicrophone(this)) {
+                AirPlayPersistence.saveDisableMicrophone(this, !it)
+                markReconnectNeeded()
+            }
             val bufferPresets = com.shilapi.xcertplay.media.MediaAudioBuffer.presets
             choice(card, getString(R.string.music_buffer), listOf(getString(R.string.s_300_ms_default), getString(R.string.s_500_ms), getString(R.string.s_1000_ms_most_stable)),
                 bufferPresets.indexOf(AirPlayPersistence.loadMediaBufferMillis(this)).coerceAtLeast(0)) {
@@ -4765,6 +4810,24 @@ class DiPlayActivity : ComponentActivity() {
         return grid
     }
     private fun version() = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.1.0-beta.1"
+
+    /**
+     * ★ v78: 我们自己的构建号（v69 / v77 / v78 …），与 `versionName` 分开。
+     *
+     * ## 为什么不能改 `versionName` 来体现迭代
+     *
+     * `:mobile/build.gradle.kts` 的 `versionName = "0.2.14-oushang1"` 从 v48 起就没动过，
+     * 它对应的是上游 DiPlay 基线，不是 B561 定制进度。改它会影响升级判定与
+     * `versionCode` 语义，风险不值当。
+     *
+     * 所以单独维护一个常量，只在主页版本行里追加显示。
+     * **每次交付新 APK 时改这一个数字。**
+     */
+    private val buildTag = "v78"
+
+    /** 主页右下角那行：`公开预览 · 0.2.14-oushang1 · v78`。 */
+    private fun versionLine(): String =
+        "${getString(R.string.home_public_preview)}${version()} · $buildTag"
     private fun languageSettings(content: LinearLayout) {
         filteredSection(content, SettingsSection.LANGUAGE,
             getString(R.string.language_section_title), R.drawable.ic_dp_language) { card ->
