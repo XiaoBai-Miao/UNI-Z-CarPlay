@@ -716,8 +716,11 @@ object AirPlayPersistence {
     fun loadNavigationVoiceScope(context: Context): com.shilapi.xcertplay.media.NavigationVoiceScope {
         val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_NAVIGATION_VOICE_SCOPE, null)
-        // B561: 未设置或历史 OFF 一律回到 ALWAYS，修复「CarPlay 导航不跟导航音量」。
-        if (stored == null || stored == "OFF") return com.shilapi.xcertplay.media.NavigationVoiceScope.ALWAYS
+        // ★ v87: 撤销 v86 的「OFF 一律升为 ALWAYS」。
+        //   v86 实车后果：default 流恒走 usage=12 后 iPhone 上**根本不出现 CarPlay 音频输出**，
+        //   声音回落到手机扬声器与蓝牙 —— 说明这台车的 usage=12 轨道我们建不起来（或建起来也不出声），
+        //   而 v84 在 scope=OFF（usage=13）下是正常出声的。
+        //   所以这里恢复「存什么用什么」：设备上的 OFF 重新生效，声音回来。
         return com.shilapi.xcertplay.media.NavigationVoiceScope.fromKey(stored)
     }
 

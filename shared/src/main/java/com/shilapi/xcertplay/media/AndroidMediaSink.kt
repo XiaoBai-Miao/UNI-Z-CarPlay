@@ -274,7 +274,7 @@ class AndroidMediaSink(
      * 与 [setNavigationActive] 一起决定 —— 该流上既有导航语音也有 UI 咔哒声，
      * 详见 [NavigationVoiceScope]。
      */
-    @Volatile private var navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.ALWAYS,
+    @Volatile private var navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.GUIDANCE_ONLY,
     /** B561: 当前是否有导航路线。供上面那条判断用，运行时由 host 更新。 */
     @Volatile private var navigationActive: Boolean = false,
     /** B561: `alert`/`compatibility` 是否走系统提示音声道（关掉即回到上游行为）。 */
@@ -1638,7 +1638,7 @@ private class AudioRenderer(
         val plan = MediaAudioBuffer.plan(selection.channel == AudioChannel.MEDIA,
             format.sampleRate, format.channels, minBuffer, mediaBufferMillis)
         bytesPerSecond = format.sampleRate * frameBytes
-        val built: AudioTrack
+        var built: AudioTrack
         var routeLabel: String
         diagnosticStage = "track-build"
         if (streamOverride == 0) {
@@ -1650,6 +1650,29 @@ private class AudioRenderer(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setBufferSizeInBytes(plan.trackBufferBytes)
                 .build()
+            // ★ v87: usage 分支此前从不检查建轨结果 —— legacy 分支有检查，这里没有。
+            //   v86 实车教训：usage=12 的轨道在这台车上建不起来（或被路由到空设备）时，
+            //   代码照常往下走，表现为「iPhone 上没有 CarPlay 音频输出」且日志零报错。
+            //   这里补上检查并回退到 USAGE_MEDIA，宁可失去主驾独占也不能静音。
+            if (built.state != AudioTrack.STATE_INITIALIZED) {
+                val rejectedUsage = attributes.usage
+                Log.e(TAG, "usage=$rejectedUsage track rejected (state=${built.state}) " +
+                    "audioType=${format.audioType} type=${format.payloadType}; falling back to USAGE_MEDIA")
+                runCatching { report("Audio: usage=$rejectedUsage track rejected state=${built.state} " +
+                    "audioType=${format.audioType} type=${format.payloadType}; fallback=media") }
+                runCatching { built.release() }
+                attributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(contentTypeFor(selection.contentType))
+                    .build()
+                built = AudioTrack.Builder()
+                    .setAudioAttributes(attributes)
+                    .setAudioFormat(pcmFormat(encoding, channelMask))
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setBufferSizeInBytes(plan.trackBufferBytes)
+                    .build()
+                routeLabel = "usage(fallback=media)"
+            }
         } else {
             val streamType = streamOverride
             routeLabel = "streamType=$streamType"

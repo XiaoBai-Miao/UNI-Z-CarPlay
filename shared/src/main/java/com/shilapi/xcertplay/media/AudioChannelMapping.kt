@@ -144,7 +144,7 @@ internal object AudioChannelMapper {
         payloadType: Int,
         mode: AudioChannelMappingMode,
         navigationStreamType: Int = DEFAULT_NAVIGATION_STREAM_TYPE,
-        navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.ALWAYS,
+        navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.GUIDANCE_ONLY,
         navigationActive: Boolean = false,
         systemAudioRouting: Boolean = true,
     ): AudioChannelSelection {
@@ -172,7 +172,7 @@ internal object AudioChannelMapper {
         audioType: String,
         payloadType: Int,
         advanced: Boolean,
-        navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.ALWAYS,
+        navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.GUIDANCE_ONLY,
         navigationActive: Boolean = false,
         systemAudioRouting: Boolean = true,
     ): Boolean =
