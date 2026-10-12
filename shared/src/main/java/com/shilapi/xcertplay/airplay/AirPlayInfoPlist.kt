@@ -30,9 +30,9 @@ object AirPlayInfoPlist {
 
     fun build(config: AirPlayConfig): Map<String, Any?> {
         val displays = arrayListOf<Any?>(
-            displayEntry(config.main, STREAM_TYPE_MAIN_SCREEN, MAIN_UUID),
+            displayEntry(config.main, STREAM_TYPE_MAIN_SCREEN, MAIN_UUID, config),
         )
-        config.cluster?.let { displays.add(displayEntry(it, STREAM_TYPE_ALT_SCREEN, ALT_UUID)) }
+        config.cluster?.let { displays.add(displayEntry(it, STREAM_TYPE_ALT_SCREEN, ALT_UUID, config)) }
 
         val info = linkedMapOf<String, Any?>(
             "sourceVersion" to config.sourceVersion,
@@ -75,6 +75,18 @@ object AirPlayInfoPlist {
         if (config.hevc) info["hevcInfo"] = emptyMap<String, Any?>()
         // With the mainBuffered session feature the iPhone requires this key; an empty dictionary is accepted.
         if (config.bufferedAudioOutputEnabled) info["mainBufferedInfo"] = emptyMap<String, Any?>()
+        // ★ v80: `disableBluetooth` —— 逆向商业接收端 `com.autochips.carplayapp` 得到。
+        //
+        // 那个 APK 连接成功后**会断开手机蓝牙**，它的 plist 键表里
+        // `disableBluetooth` 与 `telephony` / `speechRecognition` / `media` 同层级，
+        // 配套日志字符串是 `AirPlay Disable Bluetooth session control request`。
+        // 推测机制：让 iPhone 关闭蓝牙会话控制（由 iPhone 主动断），
+        // 而不是在车机侧强行断 profile —— 后者会与 iAP2 抢链路控制权。
+        //
+        // ⚠️ 未能确认它是否真是发给 iPhone 的协议键（也可能是 SDK 内部 RIMP 配置名）。
+        //   因此默认关，且开关旁必须写明「开了连不上就关掉」。
+        //   注意与 [disableAudioOutput] 区别：后者删掉整个 audioFormats，CarPlay 会完全无声。
+        if (config.disableBluetooth) info["disableBluetooth"] = true
         if (config.videoInCar) {
             // The iPhone tears down a session that enables videoPlayback without this key.
             val legacy = features(config)
@@ -180,7 +192,12 @@ object AirPlayInfoPlist {
         ),
     )
 
-    private fun displayEntry(display: AirPlayDisplayConfig, type: Int, uuid: String): Map<String, Any?> {
+    private fun displayEntry(
+        display: AirPlayDisplayConfig,
+        type: Int,
+        uuid: String,
+        config: AirPlayConfig,
+    ): Map<String, Any?> {
         val widthPhysical = AirPlayDisplaySettings.sanitizeReportedPhysicalMm(
             display.widthPhysicalMm ?: AirPlayDisplaySettings.DEFAULT_WIDTH_PHYSICAL_MM,
         )
@@ -207,14 +224,23 @@ object AirPlayInfoPlist {
         // Several areas let the car move CarPlay between them (another dock edge, the head unit's split
         // screen) with updateViewArea, without reconnecting.
         val areas = display.viewAreas?.takeIf { it.isNotEmpty() }
-        entry["viewAreas"] = areas?.map { areaDict(display, it) } ?: listOf(areaDict(display))
+        // ★ v80: `viewAreaSupportsFocusTransfer` 只在主流（type 110）上发射。
+        //   CarPlaySDK 反汇编（`_AirPlayScreenDictSetViewAreas`）确认 alt/cluster
+        //   流（type 111）的 viewArea 条目只带矩形键与 safeArea，不带这个。
+        val supportsFocusTransfer = type == STREAM_TYPE_MAIN_SCREEN && config.viewAreaFocusTransfer
+        entry["viewAreas"] = areas?.map { areaDict(display, it, supportsFocusTransfer) }
+            ?: listOf(areaDict(display, null, supportsFocusTransfer))
         entry["initialViewArea"] = if (areas == null) 0 else display.initialViewArea.coerceIn(0, areas.lastIndex)
         if (areas != null && areas.size > 1) entry["viewAreaTransitionControl"] = true
         if (display.initialUrl != null) entry["initialURL"] = display.initialUrl
         return entry
     }
 
-    private fun areaDict(display: AirPlayDisplayConfig, area: AirPlayViewArea? = null): Map<String, Any?> {
+    private fun areaDict(
+        display: AirPlayDisplayConfig,
+        area: AirPlayViewArea? = null,
+        supportsFocusTransfer: Boolean = false,
+    ): Map<String, Any?> {
         // The session SETUP response enables "viewAreas", so /info must always describe one.
         // A display without custom insets uses the full panel for both the view and safe areas; an
         // explicit area replaces the display's view insets and clips its safe area.
@@ -251,6 +277,16 @@ object AirPlayInfoPlist {
             "drawUIOutsideSafeArea" to (display.safeAreaDrawOutside ?: true),
         )
         result["safeArea"] = safeArea
+        // ★ v80: `viewAreaSupportsFocusTransfer` —— 协议层字段，Boolean。
+        //   CarPlaySDK 反汇编确认 Apple 即使特性关闭也**无条件写 false**
+        //   （缺键会导致 viewArea 形状不符），所以这里写 true 或 false 都要写。
+        //   语义是「焦点可在 CarPlay 与原生界面间移动」，**与音频焦点无关**，
+        //   更不是断开手机蓝牙 —— 逆向那个商业接收端时确认它用的是 Apple SDK 的
+        //   AirPlayReceiverSessionAccessoryAcquireFocus，那个接口我们抄不到。
+        //   顶层 features 里的 focus transfer 位也查不到权威数值，
+        //   （0x615653aee2 是口口相传的魔数，33+ 处引用零处带位注释），
+        //   所以这里只填 viewArea 层的协议字段，不动 features 掩码。
+        result["viewAreaSupportsFocusTransfer"] = supportsFocusTransfer
         return result
     }
 }

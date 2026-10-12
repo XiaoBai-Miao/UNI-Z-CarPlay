@@ -33,6 +33,9 @@ pick_jdk() {
            "/c/Program Files/Java/jdk-25"* "/c/Program Files/Java/jdk-2"* \
            "/c/Program Files/Eclipse Adoptium/jdk-25"*; do
     [ -x "$c/bin/javac$EXT" ] || continue
+    # B561 工程用 AGP 9.3.0，JDK 27(2026-09) 比 AGP 9.3 新，Kotlin/Gradle 工具链
+    # 可能不认其 class file 版本 → 强制停在 JDK 25(LTS，AGP 9.x 支持区间)。
+    case "$c" in *jdk-27*|*jdk-2[89]*|*jdk-3[0-9]*) continue;; esac
     v="$("$c/bin/javac$EXT" -version 2>&1 | sed -n 's/javac \([0-9]*\).*/\1/p')" || continue
     if [ "${v:-0}" -gt "$bestv" ]; then bestv="${v:-0}"; best="$c"; fi
   done
@@ -88,7 +91,7 @@ printf 'sdk.dir=%s\n' "$SDK_PROP" > "$PROJ/local.properties"
 # 签名:MFi 认证要 AOSP 平台私钥签出来的包,自签名会让 Wi-Fi P2P 失效(API 28 上必须是系统应用身份)
 export ANDROID_KEYSTORE_PATH="$ROOT/keys/b561-platform.p12"
 export ANDROID_KEYSTORE_PASSWORD=android
-export ANDROID_KEY_ALIAS=AndroidDebugKey
+export ANDROID_KEY_ALIAS=androiddebugkey
 export ANDROID_KEY_PASSWORD=android
 # 注意:指向 auth_assets 本身,构建脚本内部会自己拼 offline-mfi/。指到 offline-mfi 会报
 # "Explicit local authentication assets are incomplete"

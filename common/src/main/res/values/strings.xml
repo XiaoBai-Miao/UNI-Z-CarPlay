@@ -732,6 +732,12 @@
     <string name="cluster_media_card_description">Show the song title, artist and album as a card on the instrument cluster. The card has its own position and size sliders.</string>
     <string name="cluster_call_card">Call card</string>
     <string name="cluster_call_card_description">Show the caller and call duration on the instrument cluster. Kept on by default because a call is safety information.</string>
+    <string name="cluster_turn_card">Turn card</string>
+    <string name="cluster_turn_card_description">Show DiPlay’s own turn card on the instrument cluster. Drawn over the map in the custom turn-card mode and in plain map mode; the official Apple turn card is left to the iPhone.</string>
+    <string name="cluster_cast_gate">Superuni flying-screen</string>
+    <string name="cluster_cast_gate_description">Use the Superuni interface to project the cluster on head units. No-op if Superuni flying-screen is not purchased.</string>
+    <string name="cluster_fly_screen_gate">Only draw cluster when flying-screen is on</string>
+    <string name="cluster_fly_screen_gate_description">Detect the B561-native flying-screen (screen-cast) state via the action_screen_cast broadcast. While flying-screen is off, stop drawing the instrument cluster instead of overlaying it.</string>
     <string name="cluster_card_preview_hint">Preview at the instrument panel’s real proportions. Every card has its own sliders, so drag one card without moving the others.</string>
     <string name="cluster_media_card_artwork">Show artwork</string>
     <string name="cluster_media_card_artwork_description">Draw the album cover on the media card. Turn off for a text-only card, which is easier to read on the small cluster panel.</string>
@@ -842,4 +848,10 @@
     <string name="bluetooth_scope_audio">Drop audio only</string>
     <string name="bluetooth_scope_full">Drop audio and calls</string>
     <string name="bluetooth_scope_all">Drop every Bluetooth link</string>
+    <string name="v80_audio_route_diagnostics">Log audio route</string>
+    <string name="v80_audio_route_diagnostics_desc">Diagnostic only, read-only: writes the head unit mode, Bluetooth SCO, speakerphone and stream volumes to the log. Use it to tell whether Siri audio is blocked by the car side or played on the phone itself. Reconnect to apply.</string>
+    <string name="v80_view_area_focus_transfer">Declare view-area focus transfer</string>
+    <string name="v80_view_area_focus_transfer_desc">Experimental. Adds viewAreaSupportsFocusTransfer to the main screen in the info plist. This moves UI focus between CarPlay and the head unit native screens; it is not audio focus and does not disconnect Bluetooth. Turn it off if CarPlay stops connecting. Reconnect to apply.</string>
+    <string name="v80_disable_bluetooth_plist">Tell iPhone to disable Bluetooth sessions</string>
+    <string name="v80_disable_bluetooth_plist_desc">Experimental, unverified. Adds disableBluetooth to the info plist so the iPhone closes the Bluetooth audio link itself, instead of the head unit forcing the profile apart. Turn it off if CarPlay stops connecting. Reconnect to apply.</string>
 </resources>

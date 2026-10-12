@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 第三方仪表投屏 CAST_GATE 接口权限（normal 级，免签名匹配）。本车无该接口，未知权限被系统忽略，无害。 -->
+    <uses-permission android:name="com.thunder.tbxt.permission.CONTROL_CAST_GATE" />
+
     <application
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"

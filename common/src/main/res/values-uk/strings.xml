@@ -683,4 +683,10 @@
     <string name="bluetooth_scope_audio">Відключити лише звук</string>
     <string name="bluetooth_scope_full">Відключити звук і дзвінки</string>
     <string name="bluetooth_scope_all">Відключити всі Bluetooth-з’єднання</string>
+    <string name="v80_audio_route_diagnostics">Записувати аудіомаршрут</string>
+    <string name="v80_audio_route_diagnostics_desc">Лише діагностика, лише читання: записує в журнал режим головного пристрою, Bluetooth SCO, гучномовлення та гучності потоків.</string>
+    <string name="v80_view_area_focus_transfer">Оголосити передачу фокусу між областями</string>
+    <string name="v80_view_area_focus_transfer_desc">Експериментально. Додає viewAreaSupportsFocusTransfer на головний екран. Переміщує фокус інтерфейсу, не звуку, і не вимикає Bluetooth.</string>
+    <string name="v80_disable_bluetooth_plist">Попросити iPhone вимкнути сеанси Bluetooth</string>
+    <string name="v80_disable_bluetooth_plist_desc">Експериментально і не перевірено. Додає disableBluetooth, щоб iPhone сам закривав аудіоканал Bluetooth.</string>
 </resources>

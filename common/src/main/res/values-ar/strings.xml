@@ -671,4 +671,10 @@
     <string name="bluetooth_scope_audio">اقطاع الصوت فقط</string>
     <string name="bluetooth_scope_full">اقطاع الصوت والمكالمات</string>
     <string name="bluetooth_scope_all">اقطاع كل روابط البلوتوث</string>
+    <string name="v80_audio_route_diagnostics">تسجيل مسار الصوت</string>
+    <string name="v80_audio_route_diagnostics_desc">تشخيص فقط للقراءة: يكتب وضع وحدة الرأس وبلوتوث SCO والسماعات وصوت القنوات إلى السجل.</string>
+    <string name="v80_view_area_focus_transfer">الإعلان عن نقل التركيز بين المناطق</string>
+    <string name="v80_view_area_focus_transfer_desc">تجريبي. يضيف viewAreaSupportsFocusTransfer إلى الشاشة الرئيسية. هذا ينقل تركيز الواجهة فقط، وليس الصوت، ولا يفصل البلوتوث.</string>
+    <string name="v80_disable_bluetooth_plist">طلب من iPhone تعطيل جلسات البلوتوث</string>
+    <string name="v80_disable_bluetooth_plist_desc">تجريبي وغير مُتحقق منه. يضيف disableBluetooth حتى يغلق الـ iPhone رابط الصوت بنفسه.</string>
 </resources>

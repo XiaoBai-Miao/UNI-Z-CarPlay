@@ -1591,6 +1591,9 @@ class DiPlayActivity : ComponentActivity() {
             }.apply { isEnabled = !exportInProgress }
             card.addView(exportButton, matchButton(10, 60))
             card.addView(button(getString(R.string.choose_save_location), false) { chooseReportDestination() }, matchButton(10, 60))
+            // ★ v81: 调试日志开关 —— 补齐启动页缺口（会话内菜单诊断区有此项）。
+            //   没有它用户只能退出到会话内菜单才能打开屏幕调试日志。
+            debugLogsControls(card)
             val destination = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) getString(R.string.reports_save_to_downloads_diplay) else getString(R.string.choose_where_to_save_your_report)
             card.addView(label(destination + getString(R.string.nothing_is_sent_automatically_protocol_payloads_and_creden), 14, MUTED).apply { setPadding(0, dp(12), 0, 0) })
         }
@@ -1696,6 +1699,10 @@ class DiPlayActivity : ComponentActivity() {
                 save = { AirPlayPersistence.saveDisplayScalePercent(this, it) },
             )
             choice(card, getString(R.string.frame_rate), listOf(getString(R.string.s_30_fps_lighter_load), getString(R.string.s_60_fps_smoother_motion)), if (AirPlayPersistence.loadFps(this) == 60) 1 else 0) { AirPlayPersistence.saveFps(this, if (it == 1) 60 else 30) }
+            // ★ v81: 「物理尺寸基准」—— 会话内菜单（显示页）有此项，启动页此前没有，
+            //   属于「某个设置独有」。它决定 CarPlay 物理长度按宽还是按高推算，
+            //   直接影响 UI 缩放，改完必须重连才会在 /info 里体现。
+            physicalSizeBasisControls(card)
             carPlayDockControl(card)
             addSystemBarControls(
                 hideTopBar = AirPlayPersistence.loadHideTopBar(this),
@@ -1745,6 +1752,16 @@ class DiPlayActivity : ComponentActivity() {
         filteredSection(content, SettingsSection.ADVANCED_MEDIA,
             getString(R.string.settings_advanced_media), R.drawable.ic_dp_advanced) { card ->
             toggle(card, getString(R.string.efficient_video), getString(R.string.use_hevc_leave_off_for_the_widest_head_unit_compatibility), AirPlayPersistence.loadHevcEnabled(this)) { AirPlayPersistence.saveHevcEnabled(this, it); markReconnectNeeded() }
+            // ★ v81: HEVC 软件解码器开关 —— 会话内菜单（显示页）有此项，
+            //   启动页此前没有，属于「某个设置独有」。两处共用同一个 key。
+            //   会话内那侧只在 SDK >= Q 时渲染，B561 是 API 28 看不到，
+            //   所以这里**不加同样的门控** —— 否则 B561 上这个开关依然无处可设。
+            toggle(card, getString(R.string.hevc_software_decoder),
+                getString(R.string.use_software_hevc_decoder),
+                AirPlayPersistence.loadHevcSoftwareDecoderEnabled(this)) {
+                AirPlayPersistence.saveHevcSoftwareDecoderEnabled(this, it)
+                markReconnectNeeded()
+            }
             toggle(card, getString(R.string.smooth_video), getString(R.string.smooth_video_description),
                 AirPlayPersistence.loadSmoothVideo(this)) {
                 AirPlayPersistence.saveSmoothVideo(this, it)
@@ -1815,6 +1832,29 @@ class DiPlayActivity : ComponentActivity() {
                 getString(R.string.car_microphone_description),
                 !AirPlayPersistence.loadDisableMicrophone(this)) {
                 AirPlayPersistence.saveDisableMicrophone(this, !it)
+                markReconnectNeeded()
+            }
+            // ★ v81: v80 的三项焦点转移实验 —— 启动页此前**没有**入口，
+            //   只有会话内菜单有，属于「某个设置独有」。这里补齐，
+            //   与会话内菜单共用同一个 SharedPreferences key。
+            //   前两项要重连（/info 只在会话建立时发一次）；
+            //   音频路由诊断是只读快照，也需要重建会话才能看到新会话的状态。
+            toggle(card, getString(R.string.v80_audio_route_diagnostics),
+                getString(R.string.v80_audio_route_diagnostics_desc),
+                AirPlayPersistence.loadAudioRouteDiagnostics(this)) {
+                AirPlayPersistence.saveAudioRouteDiagnostics(this, it)
+                markReconnectNeeded()
+            }
+            toggle(card, getString(R.string.v80_view_area_focus_transfer),
+                getString(R.string.v80_view_area_focus_transfer_desc),
+                AirPlayPersistence.loadViewAreaFocusTransfer(this)) {
+                AirPlayPersistence.saveViewAreaFocusTransfer(this, it)
+                markReconnectNeeded()
+            }
+            toggle(card, getString(R.string.v80_disable_bluetooth_plist),
+                getString(R.string.v80_disable_bluetooth_plist_desc),
+                AirPlayPersistence.loadDisableBluetoothPlist(this)) {
+                AirPlayPersistence.saveDisableBluetoothPlist(this, it)
                 markReconnectNeeded()
             }
             val bufferPresets = com.shilapi.xcertplay.media.MediaAudioBuffer.presets
@@ -1950,6 +1990,18 @@ class DiPlayActivity : ComponentActivity() {
                         saveOpacity = { AirPlayPersistence.saveClusterJunctionOpacityPercent(this, it) },
                     )
                 }
+                // ★ B561: 转向卡（DiPlay 自绘自定义转向卡）独立开关。
+                //   之前只有“内容模式”能决定显隐，缺一个像媒体卡 / 通话卡那样的单独开关，
+                //   现已补回；开启时自定义转向卡模式与纯地图模式都会画转向卡。
+                toggle(
+                    card,
+                    getString(R.string.cluster_turn_card),
+                    getString(R.string.cluster_turn_card_description),
+                    AirPlayPersistence.loadClusterTurnCardEnabled(this),
+                ) { checked ->
+                    AirPlayPersistence.saveClusterTurnCardEnabled(this, checked)
+                    render()
+                }
                 val callOn = AirPlayPersistence.loadClusterCallCardEnabled(this)
                 toggle(card, getString(R.string.cluster_call_card),
                     getString(R.string.cluster_call_card_description), callOn) {
@@ -1969,6 +2021,21 @@ class DiPlayActivity : ComponentActivity() {
                         saveSize = { AirPlayPersistence.saveClusterCallSizePercent(this, it) },
                         saveOpacity = { AirPlayPersistence.saveClusterCallOpacityPercent(this, it) },
                     )
+                }
+
+                // ★ 仪表投屏：第三方 CAST_GATE 后端开关（独立车机平台，本车无操作）。
+                toggle(card, getString(R.string.cluster_cast_gate),
+                    getString(R.string.cluster_cast_gate_description),
+                    AirPlayPersistence.loadClusterCastGate(this)) {
+                    AirPlayPersistence.saveClusterCastGate(this, it)
+                    render()
+                }
+                // ★ B561：仅在飞屏开启时才输出仪表画面。
+                toggle(card, getString(R.string.cluster_fly_screen_gate),
+                    getString(R.string.cluster_fly_screen_gate_description),
+                    AirPlayPersistence.loadClusterFlyScreenGate(this)) {
+                    AirPlayPersistence.saveClusterFlyScreenGate(this, it)
+                    render()
                 }
 
                 toggle(card, getString(R.string.center_map_card),
@@ -2078,7 +2145,7 @@ class DiPlayActivity : ComponentActivity() {
                             // 另画一套算法就会出现「预览挺好、上车不对」，比没预览更糟。
                             clusterPreview?.let { p ->
                                 p.setVisibleCards(
-                                    turn = true,
+                                    turn = AirPlayPersistence.loadClusterTurnCardEnabled(this@DiPlayActivity),
                                     media = AirPlayPersistence.loadClusterMediaCardEnabled(this@DiPlayActivity),
                                     call = AirPlayPersistence.loadClusterCallCardEnabled(this@DiPlayActivity),
                                 )
@@ -4302,6 +4369,46 @@ class DiPlayActivity : ComponentActivity() {
     }
 
     /** Where CarPlay puts its dock; between the two fixed edges it moves at once, otherwise on reconnect. */
+    /**
+     * ★ v81: 「物理尺寸基准」选择器 —— 补齐启动页缺口，与会话内菜单共用同一个 key。
+     *
+     * 决定 CarPlay 物理长度按屏幕宽还是按高推算（影响 UI 缩放），
+     * 要重连才会在下一次 `/info` 里体现。
+     */
+    private fun physicalSizeBasisControls(card: LinearLayout) {
+        val options = listOf(
+            com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis.WIDTH to getString(R.string.widest_width),
+            com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis.HEIGHT to getString(R.string.longest_height),
+        )
+        val current = AirPlayPersistence.loadPhysicalSizeBasis(this)
+        choice(
+            card,
+            getString(R.string.physical_size_basis),
+            options.map { it.second },
+            options.indexOfFirst { it.first == current }.coerceAtLeast(0),
+        ) {
+            AirPlayPersistence.savePhysicalSizeBasis(this, options[it].first)
+            markReconnectNeeded()
+        }
+    }
+
+    /**
+     * ★ v81: 调试日志开关 —— 补齐启动页缺口，与会话内菜单共用同一个 key。
+     *
+     * 会话内菜单的诊断区与原「常用」页都渲染过这一项，彼此重复；
+     * v81 删掉「常用」页后这里成为启动页的唯一入口。
+     */
+    private fun debugLogsControls(card: LinearLayout) {
+        toggle(
+            card,
+            getString(R.string.debug_logs),
+            getString(R.string.show_on_screen_debug_logs),
+            AirPlayPersistence.loadDebugLogsEnabled(this),
+        ) {
+            AirPlayPersistence.saveDebugLogsEnabled(this, it)
+        }
+    }
+
     private fun carPlayDockControl(card: LinearLayout) {
         val docks = CarPlayDock.entries
         choice(card, getString(R.string.carplay_dock), listOf(
@@ -4823,7 +4930,7 @@ class DiPlayActivity : ComponentActivity() {
      * 所以单独维护一个常量，只在主页版本行里追加显示。
      * **每次交付新 APK 时改这一个数字。**
      */
-    private val buildTag = "v78"
+    private val buildTag = "v85"
 
     /** 主页右下角那行：`公开预览 · 0.2.14-oushang1 · v78`。 */
     private fun versionLine(): String =

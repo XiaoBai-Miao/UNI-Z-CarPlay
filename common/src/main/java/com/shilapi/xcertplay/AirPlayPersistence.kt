@@ -45,6 +45,12 @@ object AirPlayPersistence {
     private const val KEY_ADVANCED_AUDIO_CHANNEL_MAPPING = "advanced_audio_channel_mapping"
     private const val KEY_AUDIO_FOCUS_ENABLED = "audio_focus_enabled"
     private const val KEY_AUDIO_FOCUS_AUTO_YIELD = "audio_focus_auto_yield"
+    /** ★ v80: viewArea 宣告焦点转移支持（协议字段，实验性，默认关）。 */
+    private const val KEY_VIEW_AREA_FOCUS_TRANSFER = "view_area_focus_transfer"
+    /** ★ v80: /info 下发 disableBluetooth（逆向商业方案得到，未验证，默认关）。 */
+    private const val KEY_DISABLE_BLUETOOTH_PLIST = "disable_bluetooth_plist"
+    /** ★ v80: 音频路由诊断（isSpeakerphoneOn 等只读快照，默认开）。 */
+    private const val KEY_AUDIO_ROUTE_DIAGNOSTICS = "audio_route_diagnostics"
     private const val KEY_MEDIA_AUDIO_CHANNEL = "media_audio_channel"
     private const val KEY_NAVIGATION_AUDIO_CHANNEL = "navigation_audio_channel"
     private const val KEY_NAVIGATION_STREAM_TYPE = "navigation_stream_type"
@@ -204,9 +210,10 @@ object AirPlayPersistence {
     private const val KEY_CLUSTER_TURN_CARD_OVERLAY_SIZE_PERCENT = "cluster_turn_card_overlay_size_percent"
     private const val KEY_CLUSTER_TURN_CARD_OPACITY = "cluster_turn_card_opacity_percent"
 
-    /** B561 仪表媒体卡 / 通话卡开关。 */
+    /** B561 仪表媒体卡 / 通话卡 / 转向卡开关。 */
     private const val KEY_CLUSTER_MEDIA_CARD = "cluster_media_card_enabled"
     private const val KEY_CLUSTER_CALL_CARD = "cluster_call_card_enabled"
+    private const val KEY_CLUSTER_TURN_CARD = "cluster_turn_card_enabled"
 
     /**
      * B561: 把车辆数据（电量/续航）回传手机 CarPlay。
@@ -581,6 +588,96 @@ object AirPlayPersistence {
             .apply()
     }
 
+    // ─── v80: 焦点转移协议宣告实验 ───────────────────────────────
+
+    /**
+     * ★ v80: 是否在 `/info` 的 viewArea 里宣告 `viewAreaSupportsFocusTransfer`。
+     *
+     * ## 这不是 Apple SDK 的 FocusTransfer，我们抄不到那个接口
+     *
+     * 逆向商业接收端 `com.autochips.carplayapp`（含 Apple AirPlay Receiver SDK）
+     * 确认它用的是 `AirPlayReceiverSessionAccessoryAcquireFocus` +
+     * `AirPlayReceiverSessionHasFeatureFocusTransfer`。那是 **SDK 二进制库调用**，
+     * 我们没有这个库。
+     *
+     * 但 `viewAreaSupportsFocusTransfer` 是**协议层字段**，可以自己填：
+     * CarPlaySDK 反汇编（`_AirPlayScreenDictSetViewAreas`）确认它的三条约束：
+     * 1. 只在 `type == 110`（主流）上发射，alt/cluster（type 111）不带
+     * 2. Apple **无条件写入**，即使关闭也写 `false`（缺键导致形状不符）
+     * 3. 与顶层 features 位**正交**，不是配合关系
+     *
+     * ## ⚠️ 预期收益有限，不要指望它解决「断蓝牙」
+     *
+     * 它管的是「焦点在 CarPlay 界面与原生界面间移动」（导航播报时高亮 CarPlay 图标），
+     * **不是音频焦点**，更不是断开手机蓝牙。
+     * 真机抓包还显示 `focusTransfer` 在协商中**常被协商掉**
+     * （2026-08-02 实测 14 个 key 只 6 个存活，focusTransfer 未存活）—— 宣告 ≠ 生效。
+     *
+     * 所以默认 **false**：开了若连接异常，第一件事就是关掉它。
+     */
+    fun loadViewAreaFocusTransfer(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_VIEW_AREA_FOCUS_TRANSFER, false)
+
+    fun saveViewAreaFocusTransfer(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_VIEW_AREA_FOCUS_TRANSFER, enabled)
+            .apply()
+    }
+
+    /**
+     * ★ v80: 是否在 `/info` 顶层下发 `disableBluetooth`。
+     *
+     * ## 依据与不确定性（务必先读）
+     *
+     * 逆向 `com.autochips.carplayapp` 的 `libcarplay_jni.so` 时，
+     * `disableBluetooth` 出现在 plist 键表里，**与 `telephony` /
+     * `speechRecognition` / `media` 同层级**，配套日志字符串是
+     * `AirPlay Disable Bluetooth session control request`。
+     * 它连接成功后**会断开手机蓝牙**，推测靠的就是这个键——
+     * 让 iPhone 关闭蓝牙会话控制（而不是车机强行断 profile）。
+     *
+     * **但无法确认它是否真是发给 iPhone 的协议键**，也可能是 SDK 内部
+     * RIMP 配置项的名字。加错了有两种后果：
+     * - iPhone 忽略未知键 → 无害（本开关的乐观情形）
+     * - 形状校验失败 → **连不上车**（所以必须可一键关）
+     *
+     * 与 [disableAudioOutput] 的区别：后者是「删掉整个 audioFormats +
+     * 音频 feature 位」（代价是 CarPlay 完全无声，MG4 就这么放弃了音频）；
+     * 本键更细粒度，理论上只影响蓝牙会话控制。
+     */
+    fun loadDisableBluetoothPlist(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_DISABLE_BLUETOOTH_PLIST, false)
+
+    fun saveDisableBluetoothPlist(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_DISABLE_BLUETOOTH_PLIST, enabled)
+            .apply()
+    }
+
+    /**
+     * ★ v80: 是否在音频诊断里读系统音频状态
+     * （`isSpeakerphoneOn` / `isBluetoothScoOn` / `isMicrophoneMute`）。
+     *
+     * ## 为什么这个最该先开
+     *
+     * 「语音提示音从手机听筒播放」有两种完全不同的根因，处置相反：
+     * - **车机侧 HFP 抢着**（`isBluetoothScoOn=true`）→ 断 profile 方向对
+     * - **iPhone 在本地播放**（SCO 关闭、流根本没建）→ 接收端侧任何改动都无效
+     *
+     * 这三个值能一次分辨。**纯读取，不修改任何选路**，零风险。
+     */
+    fun loadAudioRouteDiagnostics(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_AUDIO_ROUTE_DIAGNOSTICS, true)
+
+    fun saveAudioRouteDiagnostics(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_AUDIO_ROUTE_DIAGNOSTICS, enabled)
+            .apply()
+    }
+
     fun loadMediaAudioChannel(context: Context): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getInt(KEY_MEDIA_AUDIO_CHANNEL, 0)
@@ -608,15 +705,21 @@ object AirPlayPersistence {
     /**
      * B561: `default` 流（导航语音与 UI 提示音共流）的去向。
      *
-     * 默认 [NavigationVoiceScope.GUIDANCE_ONLY] —— 只在真有导航路线时把这条流
-     * 送进「只主驾发声」的导航声区；没有路线时它上面只有界面咔哒声，
-     * 必须走系统声道（否则表现为"打字声从导航喇叭出来"）。
+     * 默认 [NavigationVoiceScope.ALWAYS] —— B561 把 [android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE]
+     * (usage=12) 路由到「只主驾发声」的导航声区并跟随导航音量。CarPlay 导航语音必须恒定进该声区，
+     * 否则会掉到 usage=13（提示音组）导致「能听到但不跟导航音量」。
+     *
+     * 升级迁移：历史设备可能把该项持久化为 [NavigationVoiceScope.OFF]（表现为上述 bug），
+     * 此处统一强制回到 [NavigationVoiceScope.ALWAYS]；用户若主动选择过
+     * [NavigationVoiceScope.GUIDANCE_ONLY] 则予以保留。
      */
-    fun loadNavigationVoiceScope(context: Context): com.shilapi.xcertplay.media.NavigationVoiceScope =
-        com.shilapi.xcertplay.media.NavigationVoiceScope.fromKey(
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_NAVIGATION_VOICE_SCOPE, null),
-        )
+    fun loadNavigationVoiceScope(context: Context): com.shilapi.xcertplay.media.NavigationVoiceScope {
+        val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_NAVIGATION_VOICE_SCOPE, null)
+        // B561: 未设置或历史 OFF 一律回到 ALWAYS，修复「CarPlay 导航不跟导航音量」。
+        if (stored == null || stored == "OFF") return com.shilapi.xcertplay.media.NavigationVoiceScope.ALWAYS
+        return com.shilapi.xcertplay.media.NavigationVoiceScope.fromKey(stored)
+    }
 
     fun saveNavigationVoiceScope(
         context: Context,
@@ -1549,5 +1652,61 @@ object AirPlayPersistence {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_CLUSTER_CALL_CARD, enabled).apply()
         overlaySettingsListener?.invoke()
+    }
+
+    /**
+     * 仪表转向卡（DiPlay 自绘的自定义转向卡，叠在地图上方）开关。
+     *
+     * 默认**开** —— 转向卡是导航核心信息，用户此前一直用着，去掉开关后它在
+     * “地图 + 自定义转向卡”模式下仍由内容模式决定显隐，这里补回一个独立开关，
+     * 让它能像媒体卡 / 通话卡一样单独开/关。
+     */
+    fun loadClusterTurnCardEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CLUSTER_TURN_CARD, true)
+
+    fun saveClusterTurnCardEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_TURN_CARD, enabled).apply()
+        overlaySettingsListener?.invoke()
+    }
+
+    // ── 仪表投屏：第三方 CAST_GATE 后端 + B561 原生飞屏门控 ──
+
+    /**
+     * ★ 仪表投屏后端开关（第三方 com.thunder.tbxt CAST_GATE）。
+     *
+     * 默认**关闭**。这是与 B561 原生「飞屏」完全独立的另一套车机平台后端：
+     * 打开后仪表地图走 CAST_GATE 的 partial 通道
+     * （[com.shilapi.xcertplay.cluster.ClusterCastGate]）。
+     * 在 B561 上目标包不存在，打开也是静默无操作 —— 仅用于支持该接口的车机。
+     */
+    private const val KEY_CLUSTER_CAST_GATE = "cluster_cast_gate"
+
+    fun loadClusterCastGate(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CLUSTER_CAST_GATE, false)
+
+    fun saveClusterCastGate(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_CAST_GATE, enabled).apply()
+    }
+
+    /**
+     * ★ B561：仅在仪表「飞屏」开启时才输出仪表画面。
+     *
+     * 默认**关闭** —— 保留升级前行为，不依赖任何新广播。
+     * 打开后，[com.shilapi.xcertplay.cluster.ClusterFlyScreenMonitor] 监听 B561 原生
+     * `action_screen_cast` 广播；收到 key=0（飞屏关）时本 App 不再绘制仪表画面，
+     * 收到 key=1 / `ENTERS_THE_INSTRUMENT_NAVIGATION`（飞屏开）时才绘制。
+     * 从未收到广播（UNKNOWN）时按现有行为放行，避免误拦截。
+     */
+    private const val KEY_CLUSTER_FLY_SCREEN_GATE = "cluster_fly_screen_gate"
+
+    fun loadClusterFlyScreenGate(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CLUSTER_FLY_SCREEN_GATE, false)
+
+    fun saveClusterFlyScreenGate(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_FLY_SCREEN_GATE, enabled).apply()
     }
 }

@@ -734,4 +734,10 @@
     <string name="quick_group_display">顯示</string>
     <string name="quick_group_media_card">媒體卡外觀</string>
     <string name="quick_group_centre_screen">中控屏</string>
+    <string name="v80_audio_route_diagnostics">記錄音訊路由</string>
+    <string name="v80_audio_route_diagnostics_desc">僅診斷、唯讀：把車機的音訊模式、藍牙 SCO、擴音器狀態與各聲道音量寫進日誌。用它分辨 Siri 聲音是被車機側擋住，還是由手機本機播放。需重新連線生效。</string>
+    <string name="v80_view_area_focus_transfer">宣告分割畫面焦點轉移</string>
+    <string name="v80_view_area_focus_transfer_desc">實驗性。在 info plist 的主螢幕分割中加入 viewAreaSupportsFocusTransfer，用於在 CarPlay 與車機原生介面之間移動 UI 焦點；它與音訊焦點無關，也不會斷開藍牙。若連線不上請關閉。需重新連線生效。</string>
+    <string name="v80_disable_bluetooth_plist">讓 iPhone 關閉藍牙工作階段</string>
+    <string name="v80_disable_bluetooth_plist_desc">實驗性、未驗證。在 info plist 中加入 disableBluetooth，讓 iPhone 自己關閉藍牙音訊鏈路，而不是由車機強制斷 profile。若連線不上請關閉。需重新連線生效。</string>
 </resources>

@@ -11,7 +11,14 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * ★ B561 v70: 断开**车机侧**的 A2DP 音频会话，用来缓解"手机蓝牙音乐 + CarPlay 音频"双焦点。
+ * ★ v79: 断开**车机侧**的 A2DP 音频会话，用来缓解"手机蓝牙音乐 + CarPlay 音频"双焦点。
+ *
+ * ## ★★★ profile id 必须以实车 logcat 为准，SDK 常量会骗人
+ *
+ * v76~v78 三版都用 `BluetoothProfile.A2DP` / `HEADSET`，`javap` 坐实它们是 2 / 1，
+ * 但这台 B561 的真实链路是 **profile=11（A2DP_SINK）** 和 **profile=16（厂商 HFP）**。
+ * 断profile=2 时蓝牙栈直接回`Ignored disconnect request ... no state machine`，
+ * 而我们自己的日志却打 "disconnect requested" —— **静默无效三版**。
  *
  * ## 上游没有这个功能（已核查）
  *
@@ -23,11 +30,11 @@ import java.util.concurrent.TimeUnit
  * ## 为什么只断 A2DP，不关蓝牙
  *
  * 车机蓝牙同时承担三件事，断任何一件都会坏：
- * - **A2DP**（立体声音乐）← 唯一要断的
- * - **HEADSET / HFP**（通话、通话音频）← 必须留
+ * - **A2DP_SINK**（立体声音乐，车机当音箱）← 唯一要断的
+ * - **HFP / 厂商 profile=16**（通话、通话音频）← 通常要留
  * - **iAP2 配对与重连**（`CarPlayController.connectWirelessBluetoothDevices`）← 必须留
  *
- * 所以走 `BluetoothA2dp.disconnect(device)` 而不是 `BluetoothAdapter.disable()`。
+ * 所以走 `profile.disconnect(device)` 而不是 `BluetoothAdapter.disable()`。
  * 关蓝牙会让 iPhone 断开后车机**拉不起会话**，只能用户手动重连。
  *
  * ## 与 iAP2 选机逻辑的关系（不是 bug，是已知的副作用）
@@ -56,11 +63,25 @@ internal object BluetoothA2dpDisconnect {
     /**
      * ★ v76: 本对象要断的 profile 集合。
      *
-     * ## 为什么是「A2DP + HEADSET」而不是只 A2DP
+     * ## 为什么是「A2DP_SINK + HFP」而不是 public SDK 的 A2DP + HEADSET
      *
-     * 用户要的是「断开手机与车的蓝牙连接」—— 手机连着车机时，A2DP（音乐）与
-     * HEADSET/HFP（通话）是**两条独立链路**，只断 A2DP 时手机仍与车机保持
-     * 蓝牙连接、铃声与通话音频还在，听起来「没断开」。
+     * 用户要的是「断开手机与车的蓝牙连接」—— 手机连着车机时，音乐（A2DP Sink）
+     * 与通话（HFP）是**两条独立链路**，只断一条时手机仍与车机保持蓝牙连接、
+     * 铃声还在，听起来「没断开」。
+     *
+     * ## ★★ v79 实车打脸：v76~v78 的 profile id 全是错的
+     *
+     * 之前三版一直用 `BluetoothProfile.A2DP` / `BluetoothProfile.HEADSET`，
+     * `javap` 坐实它们是 **2 / 1** —— 分别是 A2DP **Source** 与标准 HFP。
+     * 这台 B561 的真实链路是：
+     * ```
+     * profile=11  A2DP_SINK   车机当音箱收手机音乐   ← 要断的是这个
+     * profile=16  厂商 HFP   com.chinatsp.phone.bt.profile.HfpProfile
+     * ```
+     * 断 profile=2 时蓝牙栈直接回：
+     * `E A2dpService: Ignored disconnect request ... : no state machine`
+     * —— 栈里没有这条链路，请求被丢弃，我们自己的日志却打「disconnect requested」。
+     * **静默无效。** 详见 [Profile] 各枚举项注释。
      *
      * ## 为什么**不能**用 `BluetoothAdapter.disable()`
      *
@@ -69,38 +90,88 @@ internal object BluetoothA2dpDisconnect {
      * 手机断开后车机**拉不起会话**，只能用户手动重连 ——
      * 这正是"断蓝牙"最容易踩的坑。逐 profile 断开只动音频链路。
      *
-     * ## v77→v78: 聚合视图在这台车机上**不可用**，回退成 profile 名单
+     * ## 为什么不列 AVRCP
      *
-     * 「彻底断开」本来想拿「当前实际连着哪些设备」的聚合视图再对每台调
-     * `BluetoothDevice.disconnect()`，由系统决定断哪些 profile。
-     *
-     * ★ 实车打脸：`BluetoothAdapter.getConnectedDevices()` 在 B561 上**根本不存在**
-     *   （NoSuchMethodException，见 disconnectAllLinks 注释），不是 hidden 可见性问题。
-     *   所以第四档现在退化为「按名单挨个断」，名单要**覆盖车机实测会建的三条链路**。
-     *
-     * 实车日志（手动断开时蓝牙栈自己打的）证实这台车机建的是三条独立 profile：
-     * ```
-     * BluetoothHeadsetClient: disconnect(0C:6F:8B:1C:CC:CD)   ← HFP 通话
-     * BluetoothA2dpSink:     disconnect(0C:6F:8B:1C:CC:CD)   ← A2DP Sink（车机当音箱）
-     * BluetoothA2dp:         disconnect(0C:6F:8B:1C:CC:CD)   ← A2DP Source
-     * ```
-     * 注意前两条是**同一个 A2DP profile 的两端**（Sink/Source），断一次
-     * `BluetoothA2dp.disconnect()` 蓝牙栈自己会走两侧，不需要单列 AVRCP ——
-     * 而且 public SDK 的 `BluetoothProfile` 里**只有 `A2DP` / `HEADSET`**
-     * 两个 profile 常量，AVRCP 连编译期常量都没有。
+     * public SDK 的 `BluetoothProfile` 里没有 AVRCP 常量；AOSP 的
+     * `AvrcpProfile.ID = 16` 与这台车机的 HFP 撞号（厂商自己分配的 id 空间
+     * 不遵循 AOSP），所以不硬塞 —— 遥控链路跟着 A2DP_SINK 一起断即可。
      */
     enum class Profile(val id: Int, val label: String) {
-        A2DP(BluetoothProfile.A2DP, "A2DP"),
+        /**
+         * ★★ v79: **这才是断手机蓝牙音乐的那条链路。**
+         *
+         * AOSP 里 `A2dpSinkProfile.ID = 11`。车机当**音箱**、手机当音源，
+         * 手机音乐 → 车机喇叭走的就是它。
+         *
+         * ## v76→v78 为什么一直断不掉（实车日志打脸）
+         *
+         * v76~v78 用的是 `BluetoothProfile.A2DP`，而 `javap` 坐实它的值是 **2**
+         * —— 那是 `A2dpProfile.ID`，即 A2DP **Source** 角色（车机当音源往外放）。
+         * 这台车机作为 Sink，根本没有 Source 链路。实测日志里蓝牙栈自己打脸：
+         * ```
+         * E A2dpService: Ignored disconnect request for 0C:6F:8B:1C:CC:CD : no state machine
+         * ```
+         * 「no state machine」= 栈里压根没有这条链路，请求被直接丢弃。
+         * 所以 v76~v78 三版点「立即断开」都是**静默无效**，日志里我们自己的
+         * `Log.i` 还打 "disconnect requested"，看起来像成功了。
+         *
+         * ## 证据链（日志_10月10日19时04分29秒007.log）
+         *
+         * | 日志行 | 次数 | 含义 |
+         * |---|---|---|
+         * | `AdapterProperties: PROFILE_CONNECTION_STATE_CHANGE: profile=11, 2 -> 3` | 1 | A2DP_SINK 已连接→断开中 |
+         * | `CachedBluetoothDevice: onProfileStateChanged: profile A2DPSink` | 2 | ★ profile=11 就是 A2DP_SINK |
+         * | `A2dpSinkService: disconnect for device 0C:6F:8B:1C:CC:CD` | — | 手动断开时真正被断的是 Sink |
+         *
+         * 11 不在 public SDK（`A2dpSinkProfile` 是 hidden 类），但
+         * `BluetoothAdapter.getProfileProxy()` 接受任意 int profile id，
+         * 所以直接用字面量即可，不需要反射也不需要 hidden 符号。
+         */
+        A2DP_SINK(11, "A2DP_SINK"),
+
+        /** A2DP Source 侧（车机当音源）。本车机通常没有这条，留着无害。 */
+        A2DP_SDK(BluetoothProfile.A2DP, "A2DP"),
+
+        /** 通话 / 语音。见下面 HFP 的说明。 */
         HEADSET(BluetoothProfile.HEADSET, "HEADSET"),
+
+        /**
+         * ★ v79: **这台车机的 HFP 实际 profile id 是 16，不是 1。**
+         *
+         * `javap` 确认 `BluetoothProfile.HEADSET = 1`（AOSP `HeadsetProfile.ID`）。
+         * 但 B561 厂商把 HFP 注册在 **profile=16**：
+         * ```
+         * E BluetoothPhoneStub:getConnectionState: profile=16, address=0C:6F:8B:1C:CC:CD
+         * E Proxy:getConnectionState: profile=16, ...,
+         *     feature=com.chinatsp.phone.bt.profile.HfpProfile@b5
+         * ```
+         * 厂商实现类叫 `HfpProfile`（在 `com.chinatsp.phone.bt.profile` 包下），
+         * id 由厂商分配。所以断 HEADSET(=1) 在这台车上是断不到通话链路的。
+         *
+         * 与 A2DP_SINK 同理，用字面量 16。
+         */
+        HFP(16, "HFP"),
     }
 
     /**
-     * ★ v78: 「彻底断开」用的 profile 名单。
+     * ★ v79: 「彻底断开」用的 profile 名单 —— **按实车日志实测 ID，不是按 SDK 常量**。
      *
-     * A2DP 在最前（音乐双焦点是首要目标），HEADSET 垫后。
-     * 这两个已是 public SDK 能枚举的全部 profile，覆盖这台车机的三条实测链路。
+     * 顺序说明：A2DP_SINK 在最前（手机音乐是双焦点的首要目标），
+     * 其次 HFP（铃声/通话），最后才是两个可能压根不存在的
+     * （A2DP_SDK / HEADSET）—— 它们留着是为了兼容别的 ROM 变体。
+     *
+     * ## v78 的教训：SDK 常量不等于 ROM 实际值
+     *
+     * v76~v78 一直用 `BluetoothProfile.A2DP` / `HEADSET`，两个都断错了角色/ID，
+     * 实车上表现为「点了没反应」。结论在这台车上：
+     * **profile id 必须以 logcat 的 `PROFILE_CONNECTION_STATE_CHANGE: profile=N` 为准。**
      */
-    val ALL_PROFILES: List<Profile> = listOf(Profile.A2DP, Profile.HEADSET)
+    val ALL_PROFILES: List<Profile> = listOf(
+        Profile.A2DP_SINK,
+        Profile.HFP,
+        Profile.A2DP_SDK,
+        Profile.HEADSET,
+    )
 
     /** 单次操作的结果，供调用方写进诊断日志。 */
     enum class Outcome {
@@ -122,7 +193,7 @@ internal object BluetoothA2dpDisconnect {
      *
      * ## 与 [disconnect] 的区别
      *
-     * [disconnect] 按 profile 名单断（`Profile.A2DP` / `HEADSET`），
+     * [disconnect] 按 profile 名单断（见 [ALL_PROFILES]），
      * 漏了名单外的 profile；本方法不问 profile，只问
      * **「现在有哪些设备连着」**（[BluetoothAdapter.getConnectedDevices]），
      * 然后对每台调 [BluetoothDevice.disconnect] —— 让系统自己决定断哪些链路。
@@ -171,10 +242,9 @@ internal object BluetoothA2dpDisconnect {
         val devices: Set<BluetoothDevice> = connectedDevicesReflectively(btAdapter)
         if (devices.isEmpty()) {
             Log.i(TAG, "disconnectAllLinks: no aggregate view on this ROM; using per-profile fallback")
-            // 车机蓝牙栈实测会各自断这三条链路（见实车日志）：
-            //   BluetoothHeadsetClient: disconnect / BluetoothA2dpSink: disconnect /
-            //   BluetoothA2dp: disconnect
-            // AVRCP 是遥控链路，跟着 A2DP 一起断最干净。
+            // ★ v79: 名单已换成实测 profile id（A2DP_SINK=11 / HFP=16）。
+            //   v76~v78 这里传的是 BluetoothProfile.A2DP(=2) 与 HEADSET(=1)，
+            //   两个都不是这台车机的真实链路 —— 栈回 "no state machine" 静默丢弃。
             disconnect(context, ALL_PROFILES) { address, profile, r -> onResult(address, r) }
             return
         }
@@ -241,11 +311,18 @@ internal object BluetoothA2dpDisconnect {
         var anyDisconnected = false
         for (profile in profiles) {
             val proxy = awaitProfile(context, adapter, profile.id) ?: run {
-                Log.w(TAG, "${profile.label} profile proxy unavailable")
+                Log.w(TAG, "${profile.label} profile proxy unavailable (id=${profile.id})")
                 continue
             }
             try {
                 val devices = runCatching { proxy.connectedDevices.orEmpty() }.getOrDefault(emptySet())
+                if (devices.isEmpty()) {
+                    // ★ v79: 这一行是「静默无效」的诊断点。
+                    // profile 拿得到代理但没有设备 = 这条 profile 本机没建链路。
+                    // v76~v78 缺这条日志，所以 profile id 写错三版都没人发现。
+                    Log.i(TAG, "${profile.label} (id=${profile.id}): 0 connected device — skipped")
+                    continue
+                }
                 for (device in devices) {
                     val ok = runCatching {
                         proxy.javaClass.getMethod("disconnect", BluetoothDevice::class.java)
@@ -259,9 +336,8 @@ internal object BluetoothA2dpDisconnect {
                     onResult(device.address, profile.label, ok)
                     Log.i(
                         TAG,
-                        "${profile.label} ${if (ok) "disconnect requested" else "refused"} " +
-                            "for ${names[device.address] ?: device.address}" +
-                            if (ok) "" else "",
+                        "${profile.label} (id=${profile.id}) ${if (ok) "disconnect requested" else "refused"} " +
+                            "for ${names[device.address] ?: device.address}",
                     )
                 }
             } finally {

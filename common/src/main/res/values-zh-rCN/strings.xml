@@ -695,6 +695,12 @@
     <string name="cluster_media_card_description">在仪表盘上以卡片显示歌名与播放状态。位置和大小与转向卡共用同一组滑块。</string>
     <string name="cluster_call_card">通话卡片</string>
     <string name="cluster_call_card_description">在仪表盘上显示来电方与通话时长。默认开启，因为通话属于安全相关信息。</string>
+    <string name="cluster_turn_card">转向卡片</string>
+    <string name="cluster_turn_card_description">在仪表盘上显示 DiPlay 自绘的转向卡片。自定义转向卡模式与纯地图模式下叠在地图上绘制；官方转向卡交由 iPhone 自绘，不重复叠加。</string>
+    <string name="cluster_cast_gate">superuni飞屏</string>
+    <string name="cluster_cast_gate_description">用superuni的接口在车机上投仪表。未购买superuni飞屏打开也是静默无操作</string>
+    <string name="cluster_fly_screen_gate">仅飞屏开启时绘制仪表</string>
+    <string name="cluster_fly_screen_gate_description">通过 B561 原生 action_screen_cast 广播监听飞屏（投屏）状态；飞屏关闭时停止绘制仪表画面，而不是强行叠加在原车界面上。</string>
     <string name="cluster_card_preview_hint">按仪表屏真实比例预览。三种卡片共用这组滑块，会一起移动。</string>
     <string name="cluster_media_card_artwork">显示封面</string>
     <string name="cluster_media_card_artwork_description">在媒体卡上绘制专辑封面。关闭则只显示文字，在仪表小屏上更清爽易读。</string>
@@ -768,4 +774,10 @@
     <string name="quick_group_display">显示</string>
     <string name="quick_group_media_card">媒体卡外观</string>
     <string name="quick_group_centre_screen">中控屏</string>
+    <string name="v80_audio_route_diagnostics">记录音频路由</string>
+    <string name="v80_audio_route_diagnostics_desc">仅诊断、只读：把车机的音频模式、蓝牙 SCO、扬声器状态与各声道音量写进日志。用它分辨 Siri 声音是被车机侧挡住，还是由手机本机播放。需重新连接生效。</string>
+    <string name="v80_view_area_focus_transfer">声明分屏焦点转移</string>
+    <string name="v80_view_area_focus_transfer_desc">实验性。在 info plist 的主屏分屏里加入 viewAreaSupportsFocusTransfer，用于在 CarPlay 与车机原生界面之间移动 UI 焦点；它与音频焦点无关，也不会断开蓝牙。若连接不上请关闭。需重新连接生效。</string>
+    <string name="v80_disable_bluetooth_plist">让 iPhone 关闭蓝牙会话</string>
+    <string name="v80_disable_bluetooth_plist_desc">实验性、未验证。在 info plist 里加入 disableBluetooth，让 iPhone 自己关闭蓝牙音频链路，而不是由车机强行断 profile。若连接不上请关闭。需重新连接生效。</string>
 </resources>

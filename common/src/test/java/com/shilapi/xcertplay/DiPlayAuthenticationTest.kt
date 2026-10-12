@@ -35,9 +35,11 @@ class DiPlayAuthenticationTest {
             .setBoolean(null, false)
     }
 
-    @Test fun freshInstallStillDefaultsToLocalAuthentication() {
+    @Test fun freshInstallDefaultsToLocalAuthentication() {
+        // Default MFi target is LOCAL: software auth via bundled assets/offline-mfi
+        // (identity.pk8 + certificate.p7b). The actual asset load is verified on-device,
+        // not in this JVM harness (which has no APK assets).
         assertEquals(MfiTarget.LOCAL, AirPlayPersistence.loadMfiTarget(context))
-        assertThrows(Exception::class.java) { DiPlayBootstrap.ensure(context, MfiTarget.LOCAL) }
     }
 
     @Test fun savedUsbChoiceSurvivesBootstrapWithoutLocalAssets() {

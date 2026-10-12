@@ -671,4 +671,10 @@
     <string name="bluetooth_scope_audio">Cortar solo el audio</string>
     <string name="bluetooth_scope_full">Cortar audio y llamadas</string>
     <string name="bluetooth_scope_all">Cortar todos los enlaces Bluetooth</string>
+    <string name="v80_audio_route_diagnostics">Registrar la ruta de audio</string>
+    <string name="v80_audio_route_diagnostics_desc">Solo diagnóstico, solo lectura: escribe en el registro el modo de la unidad principal, el SCO de Bluetooth, el altavoz y los volúmenes. Sirve para saber si el audio de Siri lo bloquea el coche o suena en el móvil. Requiere reconectar.</string>
+    <string name="v80_view_area_focus_transfer">Declarar transferencia de foco entre áreas</string>
+    <string name="v80_view_area_focus_transfer_desc">Experimental. Añade viewAreaSupportsFocusTransfer a la pantalla principal. Mueve el foco de la interfaz, no el de audio, y no desconecta el Bluetooth.</string>
+    <string name="v80_disable_bluetooth_plist">Pedir a iPhone que desactive las sesiones de Bluetooth</string>
+    <string name="v80_disable_bluetooth_plist_desc">Experimental y sin verificar. Añade disableBluetooth para que el iPhone cierre él mismo el enlace de audio Bluetooth.</string>
 </resources>

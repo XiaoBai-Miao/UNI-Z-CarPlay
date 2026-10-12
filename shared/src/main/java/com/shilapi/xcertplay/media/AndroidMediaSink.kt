@@ -274,7 +274,7 @@ class AndroidMediaSink(
      * 与 [setNavigationActive] 一起决定 —— 该流上既有导航语音也有 UI 咔哒声，
      * 详见 [NavigationVoiceScope]。
      */
-    @Volatile private var navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.GUIDANCE_ONLY,
+    @Volatile private var navigationVoiceScope: NavigationVoiceScope = NavigationVoiceScope.ALWAYS,
     /** B561: 当前是否有导航路线。供上面那条判断用，运行时由 host 更新。 */
     @Volatile private var navigationActive: Boolean = false,
     /** B561: `alert`/`compatibility` 是否走系统提示音声道（关掉即回到上游行为）。 */
@@ -294,6 +294,14 @@ class AndroidMediaSink(
      * decoded. Only a SurfaceView honours the timestamps, so the host sets it with one.
      */
     private val videoPacingDelayMillis: Int = 0,
+    /**
+     * ★ v80: 是否输出系统音频路由快照（mode / SCO / 扬声器 / 各 stream 音量）。
+     *
+     * **只读，不修改选路**，零风险。用来分辨「提示音走手机听筒」的两种根因：
+     * 车机侧 SCO 抢着（断 profile 方向对）vs iPhone 本地播放（接收端侧改动无效）。
+     * 详见 [reportAudioRoute]。默认开。
+     */
+    private val audioRouteDiagnostics: Boolean = true,
 ) : MediaSink {
     // Each downlink publishes its own reference; a mic must match that stream and sample rate.
     private val callEchoReferences = ConcurrentHashMap<AudioStreamId, EchoReference>()
@@ -336,6 +344,53 @@ class AndroidMediaSink(
         navigationActive = active
         Log.i(SINK_TAG, "Audio: navigationActive=$active scope=$navigationVoiceScope")
         onAudioDiagnostic("Audio: navigation active=$active")
+    }
+
+    /**
+     * ★ v80: 读系统音频路由状态快照，**只读不改选路**。
+     *
+     * ## 为什么要这个
+     *
+     * 「语音输入时提示音从手机听筒播放」有两种根因完全相反的可能，
+     * 处置也相反：
+     * - **车机侧 HFP/SCO 抢着**（`scoOn=true`）→ 断profile 的方向是对的
+     * - **iPhone 在本地播放**（SCO 关闭、语音流根本没建）→ 接收端侧改任何东西都无效
+     *
+     * 上车一次就能分辨，省掉反复猜。
+     *
+     * 快照字段：
+     * - `mode` —— `AudioManager.getMode()`，正常=NORMAL，通话中=IN_COMMUNICATION
+     * - `scoOn` —— SCO 是否建立（HFP 链路活跃的标志）
+     * - `speaker` —— 车机是否强制扬声器
+     * - `micMute` —— 麦克风是否被系统静音
+     * - `a2dpOn` / `musicActive` —— 蓝牙音乐链路与媒体活跃状态
+     * - 各 stream 音量 —— 提示音走错分区时常伴随某档音量为 0
+     */
+    private fun audioRouteSnapshot(): String = runCatching {
+        val audio = audioManager ?: return@runCatching "audioManager=unavailable"
+        fun vol(stream: Int) = "${audio.getStreamVolume(stream)}/${audio.getStreamMaxVolume(stream)}"
+        "mode=${audio.mode} sco=${audio.isBluetoothScoOn} speaker=${audio.isSpeakerphoneOn} " +
+            "micMute=${audio.isMicrophoneMute} a2dp=${audio.isBluetoothA2dpOn} " +
+            "music=${audio.isMusicActive} " +
+            "volMusic=${vol(AudioManager.STREAM_MUSIC)} " +
+            "volCall=${vol(AudioManager.STREAM_VOICE_CALL)} " +
+            "volNotif=${vol(AudioManager.STREAM_NOTIFICATION)} " +
+            // Android 没有导航专用的 legacy stream（`STREAM_NAVIGATION` 不存在）——
+            // 导航播报走 usage 路由（我们 B561 上是 usage=12），没有对应的 stream 音量档。
+            // 所以这里查 STREAM_MUSIC 作为「媒体声区是否被静音」的代理指标。
+            "volSystem=${vol(AudioManager.STREAM_SYSTEM)}"
+    }.getOrElse { "audioRouteDiagnostics=${it.javaClass.simpleName}" }
+
+    /**
+     * ★ v80: 把当前音频路由快照写进诊断日志。由 host 在建流/建麦时调用。
+     *
+     * 只读，不修改任何选路 —— 零风险，可以随时开着。
+     */
+    fun reportAudioRoute(reason: String) {
+        if (!audioRouteDiagnostics) return
+        val line = "AudioRoute[$reason]: ${audioRouteSnapshot()}"
+        Log.i(SINK_TAG, line)
+        onAudioDiagnostic(line)
     }
 
     /**
@@ -611,6 +666,9 @@ class AndroidMediaSink(
     override fun onAudioStarted(id: AudioStreamId, format: AudioFormat, firstSample: Int) {
         audioRenderer(id, format).start()
         if (format.audioType == "media") updateMediaAudio(id, true)
+        // ★ v80: 下行流起来时的路由快照 —— 语音类流（telephony/speechrecognition）
+        //   若从不出现，本身就是「iPhone 没建语音流」的直接证据。
+        if (format.audioType != "media") reportAudioRoute("downlink:${format.audioType}")
     }
 
     override fun onAudioRtp(id: AudioStreamId, format: AudioFormat, rtp: ByteArray, sample: Int) {
