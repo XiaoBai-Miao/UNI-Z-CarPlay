@@ -57,6 +57,8 @@ internal class AudioFocusCoordinator(
      * 详见 [setExternallyHeldFocus] 的注释。
      */
     private var externalFocusHeld = false
+    /** ★ v88: 导航语音的专用焦点请求，与 [request]（媒体那份）互不干扰。 */
+    private var navigationRequest: AudioFocusRequest? = null
     private var focusGeneration = 0L
     private var currentListener = listenerFor(focusGeneration)
     internal val listener: AudioManager.OnAudioFocusChangeListener get() = currentListener
@@ -99,8 +101,10 @@ internal class AudioFocusCoordinator(
             Log.e(TAG, "Audio: focus acquire skipped reason=no_AudioManager")
             return
         }
+        // ★ v88: 导航语音改走 [acquireNavigation]，不再在这里被挡掉。
+        //   保留这条 early-return 只作防御（renderer 已改走专用入口）。
         if (channel == AudioChannel.NAVIGATION) {
-            Log.i(TAG, "Audio: focus acquire skipped reason=navigation_overlays_without_ducking")
+            Log.i(TAG, "Audio: focus acquire skipped reason=navigation_uses_dedicated_request")
             return
         }
         // B561: UI 提示音（打字/点击咔哒声）同样不申请焦点。
@@ -114,6 +118,75 @@ internal class AudioFocusCoordinator(
         // ★ 外部已持有焦点时不要自己再申请（同进程会互踢），只更新音量。
         if (!externalFocusHeld) refreshRequest()
         applyMediaVolume(track, active.getValue(track))
+    }
+
+    /**
+     * ★ v88: 导航语音的**专用**焦点请求。
+     *
+     * ## 为什么必须申请（v86 实车回归的根因方向）
+     *
+     * 原厂 `TTSChangAnManager`（长安 TTS，`B561_Navi` 的播报通道）用同一个
+     * `setUsage(12)` + 一条独立的 `mAudioFocusRequestGuide`，且**申请焦点**
+     * （`AudioFocusRequest$Builder.<init>(1)` = `AUDIOFOCUS_GAIN`）。实测它能正常出声。
+     * 而我们的 NAVIGATION 通道**刻意不申请焦点** —— 这是与原厂最大的行为差异，
+     * 也是 v86 把 default 流挪到 usage=12 后完全无声最可疑的成因
+     * （usage=12 的轨道在这台车机上很可能需要持有焦点才会被激活）。
+     *
+     * ## 为什么不用原厂的 AUDIOFOCUS_GAIN
+     *
+     * `AUDIOFOCUS_GAIN` 是永久语义，会让 CarPlay 媒体收到 `AUDIOFOCUS_LOSS`。
+     * 而 `AudioFocusCoordinator` 注释里的实车日志已经证明：
+     * **焦点链一断，iPhone 侧就把 CarPlay 判成暂停**（车机其实还在播，
+     * `rebuffers=0 playing=true`）。为了一条播报把整个媒体会话拖下水不值得。
+     *
+     * 改用 `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`：导航播报时媒体被压到 20%
+     * （见 [DUCKED_VOLUME] 的处理），播报结束 abandon 后恢复 —— 既满足
+     * "usage=12 需要焦点"的推测，又不打断媒体会话。
+     *
+     * ## 为什么是独立请求而不是复用 [refreshRequest] 那份
+     *
+     * 1. 同进程两份请求会互相顶掉（见 [setExternallyHeldFocus] 的实车日志注释），
+     *    复用会让 `CarPlayMediaKeys` 与导航争同一条链。
+     * 2. [externalFocusHeld] 为 true 时媒体那份请求本就不存在，导航会永远申请不到。
+     * 3. 原厂同样是独立请求，这条路径已被实车验证可行。
+     */
+    @Synchronized
+    fun acquireNavigation(attributes: AudioAttributes) {
+        if (closed) {
+            Log.i(TAG, "Audio: navigation focus acquire skipped reason=closed")
+            return
+        }
+        if (!enabled) {
+            Log.i(TAG, "Audio: navigation focus acquire skipped reason=audio_focus_disabled")
+            return
+        }
+        if (manager == null) {
+            Log.e(TAG, "Audio: navigation focus acquire skipped reason=no_AudioManager")
+            return
+        }
+        if (navigationRequest != null) return
+        val gain = AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+        // 导航语音不因焦点变化改变自身音量：被 duck 的是媒体，不是导航。
+        val listener = AudioManager.OnAudioFocusChangeListener { change ->
+            Log.i(TAG, "Audio: navigation focus change=$change (guidance keeps its own volume)")
+        }
+        val next = AudioFocusRequest.Builder(gain)
+            .setAudioAttributes(attributes)
+            .setOnAudioFocusChangeListener(listener, Handler(Looper.getMainLooper()))
+            .build()
+        navigationRequest = next
+        val result = manager?.requestAudioFocus(next)
+        Log.i(TAG, "Audio: navigation focus requested gain=$gain result=$result")
+        runCatching { report("Audio: navigation focus requested gain=$gain granted=$result") }
+    }
+
+    /** ★ v88: 与 [acquireNavigation] 配对。renderer 关闭（换流/会话结束）时调用。 */
+    @Synchronized
+    fun abandonNavigationFocus() {
+        val abandoned = navigationRequest ?: return
+        navigationRequest = null
+        runCatching { manager?.abandonAudioFocusRequest(abandoned) }
+        Log.i(TAG, "Audio: navigation focus abandoned")
     }
 
     @Synchronized
@@ -176,6 +249,7 @@ internal class AudioFocusCoordinator(
         if (closed) return
         closed = true
         active.clear()
+        abandonNavigationFocus()
         refreshRequest()
     }
 
@@ -266,7 +340,7 @@ class AndroidMediaSink(
     private val audioFocusAutoYield: Boolean = true,
     private val mediaChannel: Int = 0,
     private val navigationChannel: Int = 0,
-    context: Context? = null,
+    private val sinkContext: Context? = null,
     private val navigationStreamType: Int = AudioChannelMapper.DEFAULT_NAVIGATION_STREAM_TYPE,
     /**
      * B561: `default` 流是否允许进「只主驾发声」的导航声区。
@@ -302,10 +376,18 @@ class AndroidMediaSink(
      * 详见 [reportAudioRoute]。默认开。
      */
     private val audioRouteDiagnostics: Boolean = true,
+    /**
+     * ★ B561 氛围灯音乐跟随：sink 级令牌。
+     *
+     * 0 = 没有 context（或调用方没传）⇒ 整条链路关闭，行为与加这个功能前完全一致。
+     * 见 [AmbientMusicController]：它自己会读设置，未启用时不会碰灯。
+     */
+    private val ambientSinkToken: Long =
+        if (sinkContext != null) AmbientMusicController.openSink(sinkContext) else 0L,
 ) : MediaSink {
     // Each downlink publishes its own reference; a mic must match that stream and sample rate.
     private val callEchoReferences = ConcurrentHashMap<AudioStreamId, EchoReference>()
-    private val appContext = context?.applicationContext
+    private val appContext = sinkContext?.applicationContext
     private val audioManager = appContext?.getSystemService(AudioManager::class.java)
     private val audioFocusCoordinator = AudioFocusCoordinator(
         appContext,
@@ -769,6 +851,8 @@ class AndroidMediaSink(
         audioRenderers.values.forEach(AudioRenderer::close)
         audioRenderers.clear()
         callEchoReferences.clear()
+        // ★ B561 氛围灯：sink 收尾。控制器会自己把灯恢复到接管前的颜色/亮度。
+        AmbientMusicController.closeSink(ambientSinkToken)
         val hadMedia = synchronized(mediaAudioTypes) { mediaAudioTypes.isNotEmpty().also { mediaAudioTypes.clear() } }
         if (hadMedia) onMediaAudioChanged(false)
         try {
@@ -816,7 +900,14 @@ class AndroidMediaSink(
             callEchoReferences.remove(id)
             null
         }
-        return AudioRenderer(
+        // ★ B561 氛围灯音乐律动：每条流一份能量包络。playback lambda 通过间接引用
+        //   拿到即将建好的 renderer（构造时还没有实例）。token 为 0 时整条链路静默关闭。
+        val ambientEnvelope = AmbientMusicEnvelope()
+        var rendererRef: AudioRenderer? = null
+        val ambientToken = AmbientMusicController.openRenderer(ambientSinkToken, ambientEnvelope) {
+            rendererRef?.playbackState() ?: (0 to false)
+        }
+        val renderer = AudioRenderer(
             format,
             advancedAudioChannelMapping,
             audioFocusEnabled,
@@ -831,7 +922,12 @@ class AndroidMediaSink(
             onAudioDiagnostic,
             echoReference,
             callVoiceFilter && format.audioType == TELEPHONY_AUDIO_TYPE,
-        ).also { audioRenderers[id] = it }
+            ambientToken,
+            ambientEnvelope,
+        )
+        rendererRef = renderer
+        audioRenderers[id] = renderer
+        return renderer
     }
 
     private companion object {
@@ -1449,6 +1545,10 @@ private class AudioRenderer(
     /** Receives the played call audio so the call microphone can cancel its echo. */
     private val echoReference: EchoReference? = null,
     voiceFilter: Boolean = false,
+    /** ★ B561 氛围灯音乐律动：0 = 本条流不供能量；非 0 时 [writePcm] 才采集。 */
+    private val ambientToken: Long = 0L,
+    /** ★ B561 氛围灯音乐律动：本条流的能量包络，控制器按播放位置读取。 */
+    private val ambientEnvelope: AmbientMusicEnvelope? = null,
 ) : Closeable {
     private data class AudioPacket(val rtp: ByteArray, val sample: Int)
 
@@ -1528,6 +1628,19 @@ private class AudioRenderer(
     override fun close() {
         running = false
         thread.interrupt()
+        // ★ B561 氛围灯：本条流收尾。token 为 0 时是 no-op。
+        AmbientMusicController.closeRenderer(ambientToken)
+    }
+
+    /**
+     * ★ B561 氛围灯：当前已播放帧位置 + 是否正在播放。
+     *
+     * 控制器用它把「按写入顺序记录的能量」对齐成「按实际播出顺序读取」——
+     * 还排队没播出去的 PCM 不该让灯先闪。
+     */
+    fun playbackState(): Pair<Int, Boolean> {
+        val current = track ?: return 0 to false
+        return current.playbackHeadPosition to (current.playState == AudioTrack.PLAYSTATE_PLAYING)
     }
 
     private fun run() {
@@ -1795,14 +1908,26 @@ private class AudioRenderer(
             Log.i(TAG, "audio focus skipped channel=SYSTEM; UI sonification overlays without ducking")
             return
         }
+        // ★ v88: 导航语音改为申请专用焦点（TRANSIENT_MAY_DUCK）。
+        //   在此之前 NAVIGATION 与 SYSTEM 一样完全不申请焦点 —— 那是 v86 把 default 流
+        //   挪到 usage=12 后完全无声最可疑的成因：原厂 TTSChangAnManager 用同一 usage=12
+        //   但**申请焦点**（AUDIOFOCUS_GAIN），实测能正常出声。
+        //   不用原厂的 GAIN：永久语义会让 CarPlay 媒体收到 LOSS，而实车日志证明
+        //   焦点链一断 iPhone 就把 CarPlay 判成暂停。详见 AudioFocusCoordinator.acquireNavigation。
         if (channel == AudioChannel.NAVIGATION) {
-            Log.i(TAG, "audio focus skipped channel=NAVIGATION; overlays without ducking")
+            Log.i(TAG, "audio focus requesting dedicated channel=NAVIGATION")
+            audioFocusCoordinator.acquireNavigation(attributes)
             return
         }
         track?.let { audioFocusCoordinator.acquire(it, channel, attributes) }
     }
 
     private fun abandonAudioFocus() {
+        // ★ v88: 导航走专用请求，必须单独 abandon，否则换流后焦点泄漏。
+        if (mappedChannel == AudioChannel.NAVIGATION) {
+            audioFocusCoordinator.abandonNavigationFocus()
+            return
+        }
         track?.let(audioFocusCoordinator::release)
     }
 
@@ -2047,6 +2172,15 @@ private class AudioRenderer(
             writtenFramesThisWindow += framesWritten
             bufferProgress.written(count)
             lastPcmWriteNs = System.nanoTime()
+            // ★ B561 氛围灯音乐律动：只统计**真正写进 AudioTrack** 的 PCM。
+            //   放在 write 成功之后，所以写入失败或被丢弃的包不计入能量；
+            //   voiceFilter / fade-in 已经改过 data，这里算的就是喇叭实际播的那份。
+            //   先查 wantsPcm 再算 RMS，功能关闭时零开销。
+            if (ambientToken != 0L && AmbientMusicController.wantsPcm(ambientToken)) {
+                val segmentStart = offset + written - count
+                val rms = AmbientMusicEnvelope.pcmRms(data, segmentStart, count)
+                ambientEnvelope?.append(totalWrittenFrames - framesWritten, framesWritten.toLong(), rms)
+            }
             if (!playbackStarted) {
                 prebufferBytes += count
                 if (prebufferBytes >= startThresholdBytes) {

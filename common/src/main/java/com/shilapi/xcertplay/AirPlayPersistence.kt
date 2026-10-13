@@ -657,6 +657,29 @@ object AirPlayPersistence {
     }
 
     /**
+     * ★ v91: 「蓝牙音频」总开关 —— 由原来的 `disableBluetooth` plist 键与
+     * 「断开蓝牙范围」合并而来，一个开关说清"音频走哪条路"。
+     *
+     * - **打开（ON）= 蓝牙音频**：不断手机蓝牙，音频走 手机→车机蓝牙(A2DP)。
+     *   对应 [BluetoothScope.OFF]。
+     * - **关闭（OFF）= CarPlay 音频（默认）**：音频走 CarPlay，并断开手机蓝牙的
+     *   A2DP_SINK(profile 11) 以免两条链路抢焦点。对应 [BluetoothScope.AUDIO]
+     *   （只断音乐链路，保留 HFP 通话）。
+     *
+     * ## 为什么不再用 `disableBluetooth` plist 键
+     *
+     * 那个键从未被证实（注释里就写过"无法确认它是否真是协议键"），
+     * 实车表现是**蓝牙没断、音频反而没了**。断开改走车机侧已验证的
+     * [com.shilapi.xcertplay.BluetoothA2dpDisconnect]（profile 11 实测有效）。
+     */
+    fun loadBluetoothAudio(context: Context): Boolean =
+        loadBluetoothScopeMigrated(context) == BluetoothScope.OFF
+
+    fun saveBluetoothAudio(context: Context, enabled: Boolean) {
+        saveBluetoothScope(context, if (enabled) BluetoothScope.OFF else BluetoothScope.AUDIO)
+    }
+
+    /**
      * ★ v80: 是否在音频诊断里读系统音频状态
      * （`isSpeakerphoneOn` / `isBluetoothScoOn` / `isMicrophoneMute`）。
      *

@@ -673,7 +673,7 @@
     <string name="disconnect_a2dp_now">Відключити зараз</string>
     <string name="disconnect_a2dp_now_description">Розриває зв’язок одразу, не чекаючи наступного з’єднання. Зручно, щоб перевірити, чи йде подвійний звук через Bluetooth автомобіля.</string>
     <string name="disable_audio_output">Заявити про відсутність аудіовиходу (експериментально)</string>
-    <string name="disable_audio_output_description">Повідомляє iPhone, що в цього приймача взагалі немає звуку, тому аудіопотік не створюється. Чистіше, ніж розривати Bluetooth після підхоплення, але підказки навігації, дзвінки та музика CarPlay перестануть працювати. Потрібне перепідключення.</string>
+    <string name="disable_audio_output_description">⚠️ УВІМКНЕННЯ ЦЬОГО ПАРАМЕТРА ПОВНІСТЮ ВИМИКАЄ ЗВУК CARPLAY: підказки навігації, дзвінки та музика перестануть працювати, а iPhone перестане показувати вихід звуку CarPlay (звук піде в динамік/Bluetooth телефону). Залишайте вимкненим, якщо тільки вам дійсно потрібна тиша. Потрібне перепідключення.</string>
     <string name="car_microphone_label">Мікрофон автомобіля</string>
     <string name="car_microphone_description">Дай мікрофон автомобіля обробтав голосовій ввід. Вимкніть для порівнення. Потрібнує перепідключення.</string>
 
@@ -689,4 +689,16 @@
     <string name="v80_view_area_focus_transfer_desc">Експериментально. Додає viewAreaSupportsFocusTransfer на головний екран. Переміщує фокус інтерфейсу, не звуку, і не вимикає Bluetooth.</string>
     <string name="v80_disable_bluetooth_plist">Попросити iPhone вимкнути сеанси Bluetooth</string>
     <string name="v80_disable_bluetooth_plist_desc">Експериментально і не перевірено. Додає disableBluetooth, щоб iPhone сам закривав аудіоканал Bluetooth.</string>
+
+    <!-- ★ B561 氛围灯音乐律动 -->
+    <string name="ambient_music_enabled">Ритм підсвітки</string>
+    <string name="ambient_music_enabled_desc">Керує кольором і яскравістю підсвітки за енергією звуку CarPlay. Початковий колір і яскравість відновлюються при відключенні CarPlay або вимкненні цього параметра. Експериментальна функція.</string>
+    <string name="ambient_music_brightness">Макс. яскравість</string>
+    <string name="ambient_music_brightness_low">Низька</string>
+    <string name="ambient_music_brightness_mid">Середня</string>
+    <string name="ambient_music_brightness_high">Висока</string>
+
+    <!-- ★ v91 蓝牙音频（合并原来的两个开关） -->
+    <string name="bluetooth_audio">Звук через Bluetooth</string>
+    <string name="bluetooth_audio_desc">УВІМК = Bluetooth телефона залишається підключеним, звук іде через нього (телефон → A2DP автомобіля). ВИМК (за умовчанням) = звук через CarPlay; /info просить iPhone розірвати Bluetooth, щоб канали не боролися за фокус. Потрібне перепідключення.</string>
 </resources>

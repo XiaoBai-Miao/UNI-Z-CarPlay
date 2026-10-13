@@ -3782,15 +3782,12 @@ class CarPlayHostActivity : ComponentActivity() {
         )
         add(
             settingsSwitchRow(
-                label = getString(R.string.v80_disable_bluetooth_plist),
-                checked = AirPlayPersistence.loadDisableBluetoothPlist(this),
-                description = getString(R.string.v80_disable_bluetooth_plist_desc),
+                label = getString(R.string.bluetooth_audio),
+                checked = AirPlayPersistence.loadBluetoothAudio(this),
+                description = getString(R.string.bluetooth_audio_desc),
             ) { checked ->
-                AirPlayPersistence.saveDisableBluetoothPlist(this, checked)
-                appendLog("/info disableBluetooth ${if (checked) "on" else "off"} — reconnect to apply")
-                if (checked) {
-                    appendLog("⚠ unverified protocol key; if CarPlay no longer connects, turn it off")
-                }
+                AirPlayPersistence.saveBluetoothAudio(this, checked)
+                appendLog("Bluetooth audio ${if (checked) "on" else "off"} — reconnect to apply")
             },
         )
 
@@ -4801,15 +4798,21 @@ class CarPlayHostActivity : ComponentActivity() {
             //   比事后反射断 A2DP 干净（见 AirPlayPersistence.loadDisableAudioOutput 注释）。
             //   需要**重连**才生效：/info 只在会话建立时发一次。
             disableAudioOutput = AirPlayPersistence.loadDisableAudioOutput(this),
-            // ★ v80: 两项协议层实验，默认都关。都需要**重连**才生效（/info 只发一次）。
-            //   disableBluetooth：让 iPhone 自己关闭蓝牙会话控制（由 iPhone 主动断，
-            //   而不是车机抢 profile 链路）—— 逆向商业接收端 com.autochips.carplayapp 得到。
-            //   ⚠️ 未能确认它是否真是协议键；若开启后连不上，第一件事就是关掉它。
-            disableBluetooth = AirPlayPersistence.loadDisableBluetoothPlist(this),
+            // ★ v91: 「蓝牙音频」开关接这里。
+            //   OFF（默认）= CarPlay 音频 ⇒ 下发 disableBluetooth，让 iPhone 自己断开蓝牙
+            //     （v84 实测有效，比车机侧断 profile 干净——车机侧断 A2DP 会抢音频焦点）。
+            //   ON = 蓝牙音频 ⇒ 不下发，手机蓝牙保持，音频走 手机→车机 A2DP。
+            disableBluetooth = !AirPlayPersistence.loadBluetoothAudio(this),
             //   viewAreaFocusTransfer：只填 viewArea 层协议字段，不猜 features 位掩码。
             //   ⚠️ 它管的是 UI 层焦点移动（CarPlay↔原生界面），不是音频焦点、更不是断蓝牙。
             viewAreaFocusTransfer = AirPlayPersistence.loadViewAreaFocusTransfer(this),
         )
+        if (AirPlayPersistence.loadDisableAudioOutput(this)) {
+            appendLog("⚠️ /info 声明无音频输出已开启：iPhone 不会建立音频通道，" +
+                "iPhone 上不会出现 CarPlay 音频输出。如非有意，请联系开发者关闭。")
+        }
+        val btAudio = AirPlayPersistence.loadBluetoothAudio(this)
+        appendLog("Bluetooth audio mode: ${if (btAudio) "ON (keep phone Bluetooth, audio via A2DP)" else "OFF (audio via CarPlay, /info asks iPhone to drop Bluetooth)"}")
     }
 
     private fun loadAirPlayIcon(): AirPlayIcon {
@@ -4986,7 +4989,7 @@ class CarPlayHostActivity : ComponentActivity() {
             audioFocusAutoYield = AirPlayPersistence.loadAudioFocusAutoYield(this),
             mediaChannel = AirPlayPersistence.loadMediaAudioChannel(this),
             navigationChannel = AirPlayPersistence.loadNavigationAudioChannel(this),
-            context = this,
+            sinkContext = this,
             navigationStreamType = navigationStreamType,
             navigationVoiceScope = AirPlayPersistence.loadNavigationVoiceScope(this),
             navigationActive = clusterTurnGuidance != null,

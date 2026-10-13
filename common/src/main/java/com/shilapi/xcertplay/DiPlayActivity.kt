@@ -1851,10 +1851,12 @@ class DiPlayActivity : ComponentActivity() {
                 AirPlayPersistence.saveViewAreaFocusTransfer(this, it)
                 markReconnectNeeded()
             }
-            toggle(card, getString(R.string.v80_disable_bluetooth_plist),
-                getString(R.string.v80_disable_bluetooth_plist_desc),
-                AirPlayPersistence.loadDisableBluetoothPlist(this)) {
-                AirPlayPersistence.saveDisableBluetoothPlist(this, it)
+            // ★ v91: 「蓝牙音频」—— 由原来的「让 iPhone 关闭蓝牙会话」与
+            //   「断开蓝牙范围」合并而来，一个开关说清音频走哪条路。
+            toggle(card, getString(R.string.bluetooth_audio),
+                getString(R.string.bluetooth_audio_desc),
+                AirPlayPersistence.loadBluetoothAudio(this)) {
+                AirPlayPersistence.saveBluetoothAudio(this, it)
                 markReconnectNeeded()
             }
             val bufferPresets = com.shilapi.xcertplay.media.MediaAudioBuffer.presets
@@ -1868,6 +1870,10 @@ class DiPlayActivity : ComponentActivity() {
             //   `default`/`alert`/`compatibility` 三条流上既有可能有导航语音，
             //   也有 UI 提示音，DiPlay 0.2.14 一律送进导航专声区（usage 12）。
             systemAudioRoutingControls(card)
+            // ★ B561: 氛围灯音乐律动 —— 接原厂 B561_SmartLights 的 AIDL service。
+            //   默认关；打开后 CarPlay 媒体流的能量驱动氛围灯颜色与亮度，
+            //   CarPlay 断开/关闭开关时自动恢复用户原来的颜色与亮度（best-effort）。
+            ambientLightControls(card)
             if (resources.getBoolean(R.bool.config_advanced_audio_channel_mapping)) {
                 toggle(card, getString(R.string.advanced_audio_channel_mapping),
                     getString(R.string.use_usage_content_type_routing_instead_of_stream_type),
@@ -4975,6 +4981,50 @@ class DiPlayActivity : ComponentActivity() {
      *
      * 两者都只影响**之后**建立的音频流，所以标了「重连后生效」。
      */
+    /**
+     * ★ B561: 氛围灯音乐律动（接原厂 `B561_SmartLights` 的 AIDL service）。
+     *
+     * 能量来自 CarPlay 媒体流真正写进 AudioTrack 的 PCM（`AndroidMediaSink` 侧采集），
+     * 导航/通话流不供能量。关闭开关或 CarPlay 断开时，控制器会把灯恢复到
+     * 接管前读到的颜色与亮度（best-effort，失败会按 5s/10s/20s/30s 退避重试）。
+     *
+     * 保存后立即生效，不需要重连。
+     */
+    private fun ambientLightControls(parent: LinearLayout) {
+        val values = com.shilapi.xcertplay.media.AmbientMusicSettings.load(this)
+        toggle(
+            parent,
+            getString(R.string.ambient_music_enabled),
+            getString(R.string.ambient_music_enabled_desc),
+            values.enabled,
+        ) { checked ->
+            com.shilapi.xcertplay.media.AmbientMusicSettings.save(
+                this,
+                com.shilapi.xcertplay.media.AmbientMusicSettings.load(this).copy(enabled = checked),
+            )
+        }
+        val maxBrightness = com.shilapi.xcertplay.media.AmbientMusicSettings.maxBrightness()
+        val levels = listOf(
+            getString(R.string.ambient_music_brightness_low),
+            getString(R.string.ambient_music_brightness_mid),
+            getString(R.string.ambient_music_brightness_high),
+        )
+        val levelValues = listOf(maxBrightness / 3, maxBrightness * 2 / 3, maxBrightness)
+        choice(
+            parent,
+            getString(R.string.ambient_music_brightness),
+            levels,
+            levelValues.indexOfFirst { it >= values.brightness }.coerceAtLeast(0),
+            reconnects = false,
+        ) { index ->
+            com.shilapi.xcertplay.media.AmbientMusicSettings.save(
+                this,
+                com.shilapi.xcertplay.media.AmbientMusicSettings.load(this)
+                    .copy(brightness = levelValues[index]),
+            )
+        }
+    }
+
     private fun systemAudioRoutingControls(parent: LinearLayout) {
         val scope = AirPlayPersistence.loadNavigationVoiceScope(this)
         val options = listOf(
