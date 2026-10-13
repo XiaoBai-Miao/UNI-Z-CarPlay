@@ -2605,6 +2605,15 @@ class CarPlayHostActivity : ComponentActivity() {
         /**
      * ★ v70: 会话建立后按开关断开车机侧 A2DP（缓解双焦点）。
      *
+     * ## v92 起这只是**兜底**（T2），主断是 T1
+     *
+     * T1 = 手机经 `POST /command` 下发 `disableBluetooth`（handoff）时**立即**断，
+     * 见 [AirPlaySessionListener.onBluetoothHandoffCommand] → [cutBluetoothNow]。
+     * 根因（10-13 双日志）：iPhone 的音频路由决策窗口在会话开始头 ~1 秒，
+     * A2DP 在放歌时手机全程不走 CarPlay 音频流；+1.5s 的 tick 晚于该窗口，
+     * 且断完之后手机不回头开 CarPlay 音频（17:06 实测静音 16 秒）。
+     * tick 保留覆盖「手机在 handoff 命令之后才连上 BT」的场景。
+     *
      * ## 为什么不在这里直接断
      *
      * [BluetoothA2dpDisconnect] 是**阻塞**的 —— `getProfileProxy` 的回调在 binder 线程，
@@ -2654,7 +2663,71 @@ class CarPlayHostActivity : ComponentActivity() {
         }
 
     /**
-     * 真正执行断开的 runnable。可由菜单里的「立即断开蓝牙」操作项直接触发，
+     * v92 T1: 手机下发 `disableBluetooth`（handoff）时按当前 scope **立即**切断车机侧蓝牙。
+     *
+     * 与 [a2dpDisconnectTick] 共用 [cutBluetoothProfiles] 执行体，区别只在时机：
+     * 本函数抢在手机提交 BT 音频路由之前（10-13 实测手机甚至在命令前 32ms 就开始连 HFP），
+     * tick 是 +1.5s 的兜底。由会话监听器的
+     * [AirPlaySessionListener.onBluetoothHandoffCommand] 在 UI 线程调用。
+     */
+    private fun cutBluetoothNow(reason: String) {
+        if (isDestroyed || shuttingDown.get()) return
+        val scope = AirPlayPersistence.loadBluetoothScopeMigrated(this)
+        if (scope == AirPlayPersistence.BluetoothScope.OFF) {
+            appendLog("Bluetooth[$reason]: scope=OFF; nothing to disconnect")
+            return
+        }
+        appendLog("Bluetooth[$reason]: cutting scope=$scope")
+        // 后台线程：BluetoothA2dpDisconnect 会阻塞等待 profile 代理。
+        Thread({ cutBluetoothProfiles(scope) }, "carplay-a2dp-disconnect").start()
+    }
+
+    /**
+     * 切断执行体（后台线程调用）：按 scope 断 profile 名单，或 ALL 档整链路断开。
+     * [a2dpDisconnectTick]（T2 兜底）与 [cutBluetoothNow]（T1 handoff 即时）共用。
+     */
+    private fun cutBluetoothProfiles(scope: AirPlayPersistence.BluetoothScope) {
+        // v77: ALL 档走「彻底断开」——不按 profile 名单，让系统断该设备全部链路。
+        if (scope == AirPlayPersistence.BluetoothScope.ALL) {
+            BluetoothA2dpDisconnect.disconnectAllLinks(this) { address, ok ->
+                runOnUiThread {
+                    appendLog("Bluetooth: full link drop ${address} ${if (ok) "requested" else "fallback"}")
+                }
+            }
+            return
+        }
+        val profiles = bluetoothProfilesForScope(scope)
+        if (profiles.isEmpty()) {
+            appendLog("Bluetooth: scope=$scope maps to no profile; nothing to do")
+            return
+        }
+        val connected = profiles.flatMap { profile ->
+            BluetoothA2dpDisconnect.connectedDevices(this, profile)
+                .map { device -> profile to device }
+        }
+        if (connected.isEmpty()) {
+            runOnUiThread {
+                appendLog("Bluetooth: no ${profiles.joinToString { it.label }} device connected")
+            }
+            return
+        }
+        // 先把要断的设备名单打出来 —— 即使后面 disconnect() 全被拒绝，
+        // 这一行也能证明"我们看见了什么"，比事后猜要可靠。
+        runOnUiThread {
+            appendLog(
+                "Bluetooth: ${connected.size} link(s) to drop — " +
+                    connected.joinToString { "${it.first.label}→${it.second.second ?: it.second.first}" },
+            )
+        }
+        BluetoothA2dpDisconnect.disconnect(this, profiles) { address, profileName, ok ->
+            runOnUiThread {
+                appendLog("Bluetooth: $profileName disconnect ${address} ${if (ok) "requested" else "refused"}")
+            }
+        }
+    }
+
+    /**
+     * 真正执行断开的 runnable（v92 起为 T2 兜底）。可由菜单里的「立即断开蓝牙」操作项直接触发，
      * 不必等下一次会话 —— 现场调这个开关时最需要的就是"点了马上见效"。
      *
      * v76: 按 [AirPlayPersistence.BluetoothScope] 断一个或两个 profile，
@@ -2667,46 +2740,8 @@ class CarPlayHostActivity : ComponentActivity() {
             appendLog("Bluetooth: scope=OFF; nothing to disconnect")
             return@Runnable
         }
-        // 后台线程：BluetoothA2dpDisconnect 会阻塞等待 profile 代理。
-        Thread({
-            // v77: ALL 档走「彻底断开」——不按 profile 名单，让系统断该设备全部链路。
-            if (scope == AirPlayPersistence.BluetoothScope.ALL) {
-                BluetoothA2dpDisconnect.disconnectAllLinks(this) { address, ok ->
-                    runOnUiThread {
-                        appendLog("Bluetooth: full link drop ${address} ${if (ok) "requested" else "fallback"}")
-                    }
-                }
-                return@Thread
-            }
-            val profiles = bluetoothProfilesForScope(scope)
-            if (profiles.isEmpty()) {
-                appendLog("Bluetooth: scope=$scope maps to no profile; nothing to do")
-                return@Thread
-            }
-            val connected = profiles.flatMap { profile ->
-                BluetoothA2dpDisconnect.connectedDevices(this, profile)
-                    .map { device -> profile to device }
-            }
-            if (connected.isEmpty()) {
-                runOnUiThread {
-                    appendLog("Bluetooth: no ${profiles.joinToString { it.label }} device connected")
-                }
-                return@Thread
-            }
-            // 先把要断的设备名单打出来 —— 即使后面 disconnect() 全被拒绝，
-            // 这一行也能证明"我们看见了什么"，比事后猜要可靠。
-            runOnUiThread {
-                appendLog(
-                    "Bluetooth: ${connected.size} link(s) to drop — " +
-                        connected.joinToString { "${it.first.label}→${it.second.second ?: it.second.first}" },
-                )
-            }
-            BluetoothA2dpDisconnect.disconnect(this, profiles) { address, profileName, ok ->
-                runOnUiThread {
-                    appendLog("Bluetooth: $profileName disconnect ${address} ${if (ok) "requested" else "refused"}")
-                }
-            }
-        }, "carplay-a2dp-disconnect").start()
+        // v92: 执行体与 T1（handoff 即时切断）共用；本 tick 保留作兜底。
+        Thread({ cutBluetoothProfiles(scope) }, "carplay-a2dp-disconnect").start()
     }
 
     /** 菜单里的「立即断开蓝牙」操作项。 */
@@ -5025,6 +5060,18 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun createSessionListener(controllerGeneration: Int): AirPlaySessionListener =
         object : AirPlaySessionListener {
             private val diagnosticLog = sessionLog
+
+            // ★ v92 T1: 手机下发 disableBluetooth（handoff）= 音频路由决策点。
+            // 立即按 scope 切断，不等 onSessionActive 的 +1.5s tick（晚于手机决策窗口，
+            // 且断完手机不回头开 CarPlay 音频 —— 10-13 双日志实证）。
+            override fun onBluetoothHandoffCommand(session: AirPlaySession) {
+                runOnUiThread {
+                    if (controllerGeneration != restartGeneration || shuttingDown.get()) {
+                        return@runOnUiThread
+                    }
+                    cutBluetoothNow("handoff")
+                }
+            }
 
             override fun onSessionActive(session: AirPlaySession) {
                 runOnUiThread {

@@ -1109,18 +1109,29 @@ object AirPlayPersistence {
      *
      * 注意顺序：新枚举优先，只有它**从未被写过**时才回退看旧布尔，
      * 否则用户在新 UI 关掉开关后，下次启动会被旧布尔"复活"。
+     *
+     * ★ v92: **新装默认改为 [BluetoothScope.AUDIO]**（蓝牙音频=OFF，走 CarPlay 音频）。
+     * 实测根因（10-13 双日志）：BT A2DP 在放歌时 iPhone 全程不协商 CarPlay 音频流，
+     * 保持蓝牙与新装用户的预期相反。旧布尔显式关过的升级用户仍尊重原值（OFF）。
      */
     fun loadBluetoothScopeMigrated(context: Context): AirPlayPersistence.BluetoothScope {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val saved = prefs.getString(KEY_BLUETOOTH_SCOPE, null)
         if (saved != null) return runCatching { AirPlayPersistence.BluetoothScope.valueOf(saved) }
             .getOrDefault(AirPlayPersistence.BluetoothScope.OFF)
-        val legacy = if (prefs.contains(KEY_DISCONNECT_A2DP)) {
-            prefs.getBoolean(KEY_DISCONNECT_A2DP, false)
-        } else false
-        val scope = if (legacy) AirPlayPersistence.BluetoothScope.AUDIO else AirPlayPersistence.BluetoothScope.OFF
-        saveBluetoothScope(context, scope)
-        return scope
+        if (prefs.contains(KEY_DISCONNECT_A2DP)) {
+            // 旧布尔显式设置过：true=AUDIO（同旧语义），false=OFF（尊重当时的选择）。
+            val scope = if (prefs.getBoolean(KEY_DISCONNECT_A2DP, false)) {
+                AirPlayPersistence.BluetoothScope.AUDIO
+            } else {
+                AirPlayPersistence.BluetoothScope.OFF
+            }
+            saveBluetoothScope(context, scope)
+            return scope
+        }
+        // v92: 新装默认 AUDIO —— 见方法注释的根因说明。
+        saveBluetoothScope(context, AirPlayPersistence.BluetoothScope.AUDIO)
+        return AirPlayPersistence.BluetoothScope.AUDIO
     }
 
     /**

@@ -376,6 +376,10 @@ class CarPlayController(
                     "wireless CarPlay Bluetooth handoff requested; " +
                         "waiting for tunnel iAP2 readiness",
                 )
+                // v92: 手机已把音频路由决策权交给 CarPlay —— 这是切断车机侧 A2DP 的
+                // 正确时点（比 onSessionActive 的 +1.5s tick 更早，抢在手机提交 BT
+                // 路由之前）。具体切不切由 UI 层按蓝牙 scope 决定。
+                uiListener?.onBluetoothHandoffCommand(session)
                 armWirelessHandoffWatchdog(wirelessGeneration.get())
                 maybeCompleteWirelessHandoff()
             }

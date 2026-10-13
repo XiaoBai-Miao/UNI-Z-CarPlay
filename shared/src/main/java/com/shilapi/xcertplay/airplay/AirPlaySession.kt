@@ -33,6 +33,13 @@ interface AirPlaySessionListener {
     fun onDeviceInfo(session: AirPlaySession, info: AirPlayDeviceInfo) {}
     fun onHostUiRequested(session: AirPlaySession) {}
     fun onCommand(session: AirPlaySession, type: String, params: Map<String, Any?>) {}
+    /**
+     * v92: iPhone 在无线会话开始时经 `POST /command` 主动下发 `disableBluetooth` ——
+     * 这是手机「音频交给 CarPlay、请车机放手蓝牙」的正式信号，也是抢在手机提交 BT 路由前
+     * 切断 A2DP 的正确时点（v88 根因：原 +1.5s tick 晚于该窗口，断完手机不回头）。
+     * 仅无线 transport 的 handoff 命令触发；见 [CarPlayController] 的 handoff 分支。
+     */
+    fun onBluetoothHandoffCommand(session: AirPlaySession) {}
     /** Video in car: a playback message on a remote control session (X-Apple-StreamID). */
     fun onRemoteControlMessage(session: AirPlaySession, streamId: Long, message: Map<String, Any?>) {}
     /** Video in car: requestUI "videoplayback:", the iPhone asks the car to show its video player. */
